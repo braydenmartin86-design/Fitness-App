@@ -1443,7 +1443,7 @@ function renderNutrition(){
         <p style="font-size:13px;color:var(--muted);">Suggestion: adjust daily calories by <strong style="color:var(--text);">${sug.adjustment>0?'+':''}${sug.adjustment} kcal</strong> to get back on track.</p>
         <div class="btn-row">
           <button onclick="applyRecalibration('${currentPerson}')">Apply adjustment</button>
-          ${hasGemini() ? `<button class="secondary small" onclick="aiExplainAdjustment()">✨ Ask AI to explain this</button>` : ''}
+          <button class="secondary small" onclick="aiExplainAdjustment()">✨ Ask AI to explain this</button>
         </div>
         <p class="hint" id="ai-adjustment-note" style="margin-top:8px;"></p>
       ` : `<p style="color:var(--muted);font-size:13px;">Nothing to adjust — either you're on track, or there isn't enough weigh-in history yet (log at least ~2–3 weeks). Check back weekly.</p>`}
@@ -1682,7 +1682,6 @@ function renderProgram(){
       ${split.map(s=>`<div style="margin-bottom:14px;"><strong style="font-size:13px;">${s.label}</strong>${planTable(s.exercises, currentPerson)}</div>`).join('')}
       <p class="hint">Change days/week or experience level any time in Setup — the plan regenerates automatically.</p>
     </div>
-    ${hasGemini() ? `
     <div class="card">
       <h3>🔬 Ask AI about an exercise</h3>
       <p class="hint">Extra context on technique, muscles worked, or common mistakes for anything in your splits — supplementary to the cues below, and worth a pinch of skepticism since it's generated fresh each time rather than pre-checked.</p>
@@ -1690,7 +1689,7 @@ function renderProgram(){
       <datalist id="program-exercise-list">${[...new Set(split.flatMap(s=>s.exercises.filter(e=>e.group!=='cardio').map(e=>e.name)))].map(n=>`<option value="${n}">`).join('')}</datalist>
       <div class="btn-row"><button class="secondary small" onclick="aiResearchExercise()">🔬 Ask AI</button></div>
       <p class="hint" id="program-ai-status" style="margin-top:8px;line-height:1.5;"></p>
-    </div>` : ''}
+    </div>
     <div class="card">
       <h3>📚 Why it's built this way</h3>
       <p class="hint" style="line-height:1.6;">
@@ -1709,7 +1708,6 @@ async function aiResearchExercise(){
   if(!input || !statusEl) return;
   const name = input.value.trim();
   if(!name){ statusEl.textContent = 'Type or pick an exercise first.'; return; }
-  if(!hasGemini()){ statusEl.textContent = '⚠ No Gemini API key configured.'; return; }
   statusEl.textContent = '🔬 Researching…';
   const prompt = `You are a knowledgeable, careful strength coach. Give a brief, practical rundown of the exercise "${name}" for someone following a structured gym program: which muscles it primarily targets, one or two common technique mistakes to watch for, and one tip for getting more out of it. 3-5 short sentences, plain text, no markdown or headers. Be accurate and specific — if you're not confident about a particular detail, keep that part general rather than inventing specifics.`;
   try{
@@ -2286,7 +2284,7 @@ function renderCustomRecipeForm(){
         <label style="margin-top:0;">✨ Paste a recipe and let AI fill in the fields below</label>
         <textarea id="cr-ai-input" rows="4" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:11px 12px;color:var(--text);font-size:13px;font-family:inherit;" placeholder="Paste ingredients, a full recipe, or even a rough description — e.g. 'chicken thigh curry with rice, serves 4: 500g chicken thigh, 400ml coconut milk, 2 tbsp curry paste...'"></textarea>
         <div class="btn-row"><button class="secondary small" onclick="aiFillRecipeForm()">✨ Estimate with AI</button></div>
-        <p class="hint" id="cr-ai-status" style="margin-top:6px;">${hasGemini() ? 'Uses your Gemini API key — always double-check the numbers it gives you before saving.' : 'No Gemini API key configured yet — add one at the top of index.html, or just fill in the fields below by hand.'}</p>
+        <p class="hint" id="cr-ai-status" style="margin-top:6px;">Estimates macros via your Gemini proxy — always double-check the numbers before saving.</p>
       </div>
       <div class="row">
         <div><label>Meal slot</label>
@@ -2326,7 +2324,6 @@ async function aiFillRecipeForm(){
   const statusEl = document.getElementById('cr-ai-status');
   const text = textEl.value.trim();
   if(!text){ statusEl.textContent = 'Paste some recipe text in first.'; return; }
-  if(!hasGemini()){ statusEl.textContent = '⚠ No Gemini API key configured — add one at the top of index.html, or fill in the fields below by hand.'; return; }
   statusEl.textContent = '✨ Thinking…';
   try{
     const parsed = await aiEstimateRecipe(text);
@@ -2972,6 +2969,7 @@ function renderLog(){
         ${summary.tomorrowNotes.map(n=>`<p style="font-size:13px;margin-top:6px;line-height:1.5;">${n}</p>`).join('')}
       </div>
       ${summary.aiLoading ? `<p class="hint" style="margin-top:12px;">✨ Getting a fuller coaching note…</p>` : ''}
+      ${summary.aiError ? `<p class="hint" style="margin-top:12px;color:var(--danger);">⚠ AI note failed: ${summary.aiError}</p>` : ''}
       ${summary.aiText ? `
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
         <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px;">✨ Coach's note</p>
@@ -3035,9 +3033,9 @@ function addLog(){
   save();
   const feedbackPersonKey = currentPerson;
   lastDailySummary[currentPerson] = generateDailySummary(currentPerson, date);
-  if(lastDailySummary[currentPerson]) lastDailySummary[currentPerson].aiLoading = hasGemini();
+  if(lastDailySummary[currentPerson]) lastDailySummary[currentPerson].aiLoading = true;
   renderLog();
-  if(hasGemini() && lastDailySummary[currentPerson]) fetchAIDailyInsight(feedbackPersonKey, date);
+  if(lastDailySummary[currentPerson]) fetchAIDailyInsight(feedbackPersonKey, date);
 }
 async function fetchAIDailyInsight(personKey, date){
   const summary = lastDailySummary[personKey];
@@ -3055,11 +3053,12 @@ Write a short (3-5 sentences, plain text, no markdown/headers), honest and speci
     if(lastDailySummary[personKey] && lastDailySummary[personKey].date===date){
       lastDailySummary[personKey].aiText = text.trim();
       lastDailySummary[personKey].aiLoading = false;
+      lastDailySummary[personKey].aiError = null;
       if(currentTab==='log' && currentPerson===personKey) renderLog();
     }
   }catch(e){
     console.error('AI daily insight failed, keeping the standard tips:', e);
-    if(lastDailySummary[personKey]){ lastDailySummary[personKey].aiLoading = false; }
+    if(lastDailySummary[personKey]){ lastDailySummary[personKey].aiLoading = false; lastDailySummary[personKey].aiError = e.message; }
     if(currentTab==='log' && currentPerson===personKey) renderLog();
   }
 }
@@ -3187,12 +3186,13 @@ Write a short reply (2-4 sentences, plain text, no markdown, no headers). ${note
       insight.text = text.trim();
       insight.aiLoading = false;
       insight.aiGenerated = true;
+      insight.aiError = null;
       if(currentTab==='workouts' && currentPerson===personKey) renderWorkouts();
     }
   }catch(e){
     console.error('AI session insight failed, keeping the standard note:', e);
     const insight = lastSessionInsight[personKey];
-    if(insight){ insight.aiLoading = false; }
+    if(insight){ insight.aiLoading = false; insight.aiError = e.message; }
     if(currentTab==='workouts' && currentPerson===personKey) renderWorkouts();
   }
 }
@@ -3330,10 +3330,10 @@ function saveFullSession(){
   if(feeling){
     state.sessionFeedback[currentPerson].push({id:uid(), date, sessionLabel:session.label, feeling, notes});
     // Show the reliable canned insight immediately, then upgrade it to an AI-personalised
-    // one (which actually responds to what they wrote in notes) once it arrives — if AI
-    // isn't configured or the call fails, the canned version just stays as-is, unchanged.
-    lastSessionInsight[currentPerson] = {sessionLabel:session.label, feeling, notes, text:generateSessionInsight(feeling), aiLoading:hasGemini()};
-    if(hasGemini()) fetchAISessionInsight(feedbackPersonKey, date, session.label, feeling, notes);
+    // one (which actually responds to what they wrote in notes) once it arrives — if the
+    // call fails, the canned version just stays as-is and the error shows underneath it.
+    lastSessionInsight[currentPerson] = {sessionLabel:session.label, feeling, notes, text:generateSessionInsight(feeling), aiLoading:true};
+    fetchAISessionInsight(feedbackPersonKey, date, session.label, feeling, notes);
   } else {
     lastSessionInsight[currentPerson] = null;
   }
@@ -3554,6 +3554,7 @@ function renderWorkouts(){
       <p style="font-size:13px;line-height:1.5;margin-top:8px;">${lastSessionInsight[currentPerson].text}</p>
       ${lastSessionInsight[currentPerson].aiLoading ? `<p class="hint" style="margin-top:6px;">✨ Getting a more personal note based on what you wrote…</p>` : ''}
       ${lastSessionInsight[currentPerson].aiGenerated ? `<p class="hint" style="margin-top:6px;">✨ Personalised by AI based on your note.</p>` : ''}
+      ${lastSessionInsight[currentPerson].aiError ? `<p class="hint" style="margin-top:6px;color:var(--danger);">⚠ AI note failed: ${lastSessionInsight[currentPerson].aiError}</p>` : ''}
       ${lastSessionInsight[currentPerson].notes ? `<p class="hint" style="margin-top:8px;">Your note: "${lastSessionInsight[currentPerson].notes}"</p>` : ''}
     </div>` : ''}
     <div id="exercise-swap-sheet-root"></div>
@@ -3586,7 +3587,7 @@ function renderWorkouts(){
       <h3>🎯 Next session — ${p.name}</h3>
       <p class="hint">What to aim for each exercise next time, based on ${p.name}'s own logged history and 1RMs — always up to date, come back any week to check it.</p>
       ${renderNextTargetsHTML(currentPerson)}
-      ${hasGemini() ? `<div class="btn-row"><button class="secondary small" onclick="aiExplainNextTargets()">✨ Get AI coaching tips for this session</button></div><p class="hint" id="ai-targets-note" style="margin-top:6px;"></p>` : ''}
+      <div class="btn-row"><button class="secondary small" onclick="aiExplainNextTargets()">✨ Get AI coaching tips for this session</button></div><p class="hint" id="ai-targets-note" style="margin-top:6px;"></p>
     </div>
     <div class="card">
       <h3>This week's sessions</h3>
