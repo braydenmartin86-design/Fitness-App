@@ -22,8 +22,12 @@
      Dashboard → Project Settings → API → "Project URL" and "anon public" key.
      Never put your service_role key here — only the public anon key belongs in client code. -->
 <script>
-  window.SUPABASE_URL = "https://bqhzwoslyijuvppzgmyw.supabase.co";
-  window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxaHp3b3NseWlqdXZwcHpnbXl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY4NjU4NjMsImV4cCI6MjEwMjQ0MTg2M30.8xHIe4Uie9d_nJFaQrQAIyuoEa1AanhsnWCrX5vieNI";
+  window.SUPABASE_URL = "YOUR_SUPABASE_PROJECT_URL_HERE";
+  window.SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY_HERE";
+  // Google AI Studio → Get API key. Used client-side for the recipe AI-assist feature only —
+  // see the security note in the AI section of the script below before you rely on this.
+  window.GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE";
+  window.GEMINI_MODEL = "gemini-3.5-flash"; // change here if Google renames/retires this model
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
@@ -435,6 +439,57 @@ function updateSyncIndicator(){
   el.textContent = label;
 }
 function uid(){ return Math.random().toString(36).slice(2,10); }
+
+// --- Gemini AI: currently used for one thing only — estimating macros/ingredients when
+// you paste in a recipe under Meal Prep → My Recipes. Everything else in this app (nutrition
+// targets, workout programming, meal suggestions, exercise substitutions) is deterministic
+// logic, not AI — that's deliberate, not a gap, since those need to be reliable and free.
+// SECURITY NOTE: this key is used directly from the browser, which means anyone who views
+// this page's source or network tab can see it. Fine for a private two-person app where you
+// trust who has the link, but don't treat it as a secret the way you would on a real backend.
+function hasGemini(){
+  return typeof window !== 'undefined' && !!window.GEMINI_API_KEY && window.GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE';
+}
+async function callGemini(prompt, opts){
+  opts = opts || {};
+  if(!hasGemini()) throw new Error('No Gemini API key configured');
+  const model = window.GEMINI_MODEL || 'gemini-3.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const body = { contents: [{ role:'user', parts: [{ text: prompt }] }] };
+  if(opts.json) body.generationConfig = { responseMimeType: 'application/json' };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': window.GEMINI_API_KEY },
+    body: JSON.stringify(body),
+  });
+  if(!res.ok){
+    const errText = await res.text().catch(()=>'');
+    throw new Error(`Gemini API error ${res.status}: ${errText.slice(0,180)}`);
+  }
+  const data = await res.json();
+  const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
+  const text = parts && parts[0] && parts[0].text;
+  if(!text) throw new Error('Gemini returned an empty response');
+  return text;
+}
+async function aiEstimateRecipe(rawText){
+  const prompt = `You are a nutrition assistant helping fill in a recipe tracker. A user pasted the recipe text below (it might be a full recipe, just an ingredient list, or a rough description). Estimate, per single serving:
+- a short recipe name
+- calories, protein (g), carbs (g), fat (g) — reasonable estimates using standard nutrition knowledge; if the text states a serving count, divide totals by that
+- a one-to-two sentence method/prep summary
+- an ingredients list scaled to ONE serving, each with an item name, a numeric quantity, and a unit (g, ml, or leave qty null with unit "" for things like "to taste")
+
+Return ONLY this exact JSON shape, nothing else, no markdown fences:
+{"name":"...", "calories":000, "protein":00, "carbs":00, "fat":00, "prep":"...", "ingredients":[{"item":"...", "qty":000, "unit":"g"}]}
+
+Recipe text:
+"""
+${rawText}
+"""`;
+  const raw = await callGemini(prompt, {json:true});
+  const cleaned = raw.replace(/^```json\s*/i,'').replace(/```\s*$/,'').trim();
+  return JSON.parse(cleaned);
+}
 function todayStr(){ return formatLocalDate(new Date()); }
 function fmt1(n){ return (Math.round(n*10)/10).toString(); }
 
@@ -1385,12 +1440,33 @@ function renderNutrition(){
       ${sug ? `
         <p style="font-size:13px;">Actual trend: <span class="mono">${sug.actualRate>0?'+':''}${fmt1(sug.actualRate)} kg/week</span> vs expected <span class="mono">${sug.expectedRate>0?'+':''}${fmt1(sug.expectedRate)} kg/week</span> for a ${PHASES[p.phase].label.split(' — ')[0].toLowerCase()}.</p>
         <p style="font-size:13px;color:var(--muted);">Suggestion: adjust daily calories by <strong style="color:var(--text);">${sug.adjustment>0?'+':''}${sug.adjustment} kcal</strong> to get back on track.</p>
-        <div class="btn-row"><button onclick="applyRecalibration('${currentPerson}')">Apply adjustment</button></div>
+        <div class="btn-row">
+          <button onclick="applyRecalibration('${currentPerson}')">Apply adjustment</button>
+          ${hasGemini() ? `<button class="secondary small" onclick="aiExplainAdjustment()">✨ Ask AI to explain this</button>` : ''}
+        </div>
+        <p class="hint" id="ai-adjustment-note" style="margin-top:8px;"></p>
       ` : `<p style="color:var(--muted);font-size:13px;">Nothing to adjust — either you're on track, or there isn't enough weigh-in history yet (log at least ~2–3 weeks). Check back weekly.</p>`}
       ${t.adjustment ? `<div class="btn-row"><button class="secondary small" onclick="resetAdjustment('${currentPerson}')">Reset adjustment to 0</button></div>` : ''}
     </div>
     `}
   `;
+}
+async function aiExplainAdjustment(){
+  const statusEl = document.getElementById('ai-adjustment-note');
+  const sug = recalibrationSuggestion(currentPerson);
+  if(!sug || !statusEl) return;
+  const p = state.people[currentPerson];
+  statusEl.textContent = '✨ Thinking…';
+  const prompt = `You are an evidence-informed nutrition coach. ${p.name} is on a "${PHASES[p.phase].label.split(' \u2014 ')[0]}" phase. Their actual weight trend has been ${fmt1(sug.actualRate)} kg/week versus an expected ${fmt1(sug.expectedRate)} kg/week for that phase. Based on that gap, their calories are being adjusted by ${sug.adjustment>0?'+':''}${sug.adjustment} kcal/day.
+
+In 2-3 short sentences (plain text, no markdown), explain in plain terms why this adjustment makes sense given the gap between actual and expected trend, and reassure them this is a normal part of staying on track rather than a sign anything went wrong.`;
+  try{
+    const text = await callGemini(prompt);
+    statusEl.textContent = '✨ ' + text.trim();
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = `⚠ Couldn\u2019t reach AI (${e.message}). The adjustment above is calculated directly from your logged trend either way.`;
+  }
 }
 function setNutritionPerson(key){ currentPerson=key; renderNutrition(); }
 function resetAdjustment(key){ state.people[key].calorieAdjustment = 0; save(); renderNutrition(); }
@@ -1605,6 +1681,15 @@ function renderProgram(){
       ${split.map(s=>`<div style="margin-bottom:14px;"><strong style="font-size:13px;">${s.label}</strong>${planTable(s.exercises, currentPerson)}</div>`).join('')}
       <p class="hint">Change days/week or experience level any time in Setup — the plan regenerates automatically.</p>
     </div>
+    ${hasGemini() ? `
+    <div class="card">
+      <h3>🔬 Ask AI about an exercise</h3>
+      <p class="hint">Extra context on technique, muscles worked, or common mistakes for anything in your splits — supplementary to the cues below, and worth a pinch of skepticism since it's generated fresh each time rather than pre-checked.</p>
+      <input list="program-exercise-list" id="program-ai-exercise" placeholder="Type or pick an exercise from your program">
+      <datalist id="program-exercise-list">${[...new Set(split.flatMap(s=>s.exercises.filter(e=>e.group!=='cardio').map(e=>e.name)))].map(n=>`<option value="${n}">`).join('')}</datalist>
+      <div class="btn-row"><button class="secondary small" onclick="aiResearchExercise()">🔬 Ask AI</button></div>
+      <p class="hint" id="program-ai-status" style="margin-top:8px;line-height:1.5;"></p>
+    </div>` : ''}
     <div class="card">
       <h3>📚 Why it's built this way</h3>
       <p class="hint" style="line-height:1.6;">
@@ -1616,6 +1701,23 @@ function renderProgram(){
     </div>
     <div id="day-settings-sheet-root"></div>
   `;
+}
+async function aiResearchExercise(){
+  const input = document.getElementById('program-ai-exercise');
+  const statusEl = document.getElementById('program-ai-status');
+  if(!input || !statusEl) return;
+  const name = input.value.trim();
+  if(!name){ statusEl.textContent = 'Type or pick an exercise first.'; return; }
+  if(!hasGemini()){ statusEl.textContent = '⚠ No Gemini API key configured.'; return; }
+  statusEl.textContent = '🔬 Researching…';
+  const prompt = `You are a knowledgeable, careful strength coach. Give a brief, practical rundown of the exercise "${name}" for someone following a structured gym program: which muscles it primarily targets, one or two common technique mistakes to watch for, and one tip for getting more out of it. 3-5 short sentences, plain text, no markdown or headers. Be accurate and specific — if you're not confident about a particular detail, keep that part general rather than inventing specifics.`;
+  try{
+    const text = await callGemini(prompt);
+    statusEl.textContent = text.trim();
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+  }
 }
 function toggleSessionCompleted(weekStart, day){
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
@@ -2179,6 +2281,12 @@ function renderCustomRecipeList(){
 function renderCustomRecipeForm(){
   return `
     <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+      <div style="background:var(--surface-alt);border-radius:14px;padding:14px;margin-bottom:16px;">
+        <label style="margin-top:0;">✨ Paste a recipe and let AI fill in the fields below</label>
+        <textarea id="cr-ai-input" rows="4" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:11px 12px;color:var(--text);font-size:13px;font-family:inherit;" placeholder="Paste ingredients, a full recipe, or even a rough description — e.g. 'chicken thigh curry with rice, serves 4: 500g chicken thigh, 400ml coconut milk, 2 tbsp curry paste...'"></textarea>
+        <div class="btn-row"><button class="secondary small" onclick="aiFillRecipeForm()">✨ Estimate with AI</button></div>
+        <p class="hint" id="cr-ai-status" style="margin-top:6px;">${hasGemini() ? 'Uses your Gemini API key — always double-check the numbers it gives you before saving.' : 'No Gemini API key configured yet — add one at the top of index.html, or just fill in the fields below by hand.'}</p>
+      </div>
       <div class="row">
         <div><label>Meal slot</label>
           <select id="cr-slot">
@@ -2208,9 +2316,32 @@ function renderCustomRecipeForm(){
       <label>Method / prep notes</label>
       <textarea id="cr-prep" rows="3" style="width:100%;background:var(--surface-alt);border:1px solid var(--border);border-radius:12px;padding:11px 12px;color:var(--text);font-size:14px;font-family:inherit;" placeholder="However you make it — batch cook notes, storage, reheating..."></textarea>
       <label>Source link (optional)</label>
-      <input type="url" id="cr-source" placeholder="https://... — paste it to Claude in chat first and it'll read the recipe, work out the macros, and tell you exactly what to fill in above">
+      <input type="url" id="cr-source" placeholder="https://...">
       <div class="btn-row"><button onclick="addCustomRecipe()">Save recipe</button></div>
     </div>`;
+}
+async function aiFillRecipeForm(){
+  const textEl = document.getElementById('cr-ai-input');
+  const statusEl = document.getElementById('cr-ai-status');
+  const text = textEl.value.trim();
+  if(!text){ statusEl.textContent = 'Paste some recipe text in first.'; return; }
+  if(!hasGemini()){ statusEl.textContent = '⚠ No Gemini API key configured — add one at the top of index.html, or fill in the fields below by hand.'; return; }
+  statusEl.textContent = '✨ Thinking…';
+  try{
+    const parsed = await aiEstimateRecipe(text);
+    document.getElementById('cr-name').value = parsed.name || '';
+    document.getElementById('cr-calories').value = parsed.calories ?? '';
+    document.getElementById('cr-protein').value = parsed.protein ?? '';
+    document.getElementById('cr-carbs').value = parsed.carbs ?? '';
+    document.getElementById('cr-fat').value = parsed.fat ?? '';
+    document.getElementById('cr-prep').value = parsed.prep || '';
+    const ingredientsText = (parsed.ingredients||[]).map(i=> (i.qty!=null && i.qty!=='') ? `${i.item}, ${i.qty}, ${i.unit||''}` : i.item).join('\n');
+    document.getElementById('cr-ingredients').value = ingredientsText;
+    statusEl.textContent = '✅ Filled in below — check it over before saving, AI estimates aren\u2019t exact.';
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = `⚠ Couldn\u2019t get an AI estimate (${e.message}). Fill in the fields below by hand instead.`;
+  }
 }
 function addCustomRecipe(){
   const slot = document.getElementById('cr-slot').value;
@@ -2839,6 +2970,12 @@ function renderLog(){
         <p style="font-size:13px;line-height:1.5;">${summary.couldveBeenBetter}</p>
         ${summary.tomorrowNotes.map(n=>`<p style="font-size:13px;margin-top:6px;line-height:1.5;">${n}</p>`).join('')}
       </div>
+      ${summary.aiLoading ? `<p class="hint" style="margin-top:12px;">✨ Getting a fuller coaching note…</p>` : ''}
+      ${summary.aiText ? `
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+        <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px;">✨ Coach's note</p>
+        <p style="font-size:13px;line-height:1.5;">${summary.aiText}</p>
+      </div>` : ''}
     </div>` : '';
   document.getElementById('main').innerHTML = `
     <h1 class="page-title">Daily Log</h1>
@@ -2895,8 +3032,35 @@ function addLog(){
   if(existingIdx>=0) state.logs[currentPerson][existingIdx] = {...state.logs[currentPerson][existingIdx], ...entry, id: state.logs[currentPerson][existingIdx].id};
   else state.logs[currentPerson].push(entry);
   save();
+  const feedbackPersonKey = currentPerson;
   lastDailySummary[currentPerson] = generateDailySummary(currentPerson, date);
+  if(lastDailySummary[currentPerson]) lastDailySummary[currentPerson].aiLoading = hasGemini();
   renderLog();
+  if(hasGemini() && lastDailySummary[currentPerson]) fetchAIDailyInsight(feedbackPersonKey, date);
+}
+async function fetchAIDailyInsight(personKey, date){
+  const summary = lastDailySummary[personKey];
+  if(!summary) return;
+  const p = state.people[personKey];
+  const e = summary.entry;
+  const prompt = `You are a supportive, evidence-informed nutrition and training coach texting a client at the end of their day. ${p.name} is on a "${PHASES[p.phase].label.split(' \u2014 ')[0]}" phase, target ${summary.dayTarget} kcal today.
+
+Today's actuals: ${e.calories!=null?`${e.calories} kcal (${summary.calPct}% of target)`:'calories not logged'}, ${e.protein!=null?`${e.protein}g protein`:'protein not logged'}, ${e.carbs!=null?`${e.carbs}g carbs`:'carbs not logged'}, ${e.fat!=null?`${e.fat}g fat`:'fat not logged'}. Workout done today: ${e.workoutDone?'yes':'no'}.
+${summary.weightNote ? `Context: ${summary.weightNote}` : ''}
+
+Write a short (3-5 sentences, plain text, no markdown/headers), honest and specific coaching note about today, and one clear thing to focus on tomorrow. Be direct and genuinely helpful, not falsely upbeat — if something was off, say so plainly but constructively. Don't just restate the numbers back at them, give real insight.`;
+  try{
+    const text = await callGemini(prompt);
+    if(lastDailySummary[personKey] && lastDailySummary[personKey].date===date){
+      lastDailySummary[personKey].aiText = text.trim();
+      lastDailySummary[personKey].aiLoading = false;
+      if(currentTab==='log' && currentPerson===personKey) renderLog();
+    }
+  }catch(e){
+    console.error('AI daily insight failed, keeping the standard tips:', e);
+    if(lastDailySummary[personKey]){ lastDailySummary[personKey].aiLoading = false; }
+    if(currentTab==='log' && currentPerson===personKey) renderLog();
+  }
 }
 function deleteLog(id){ state.logs[currentPerson] = state.logs[currentPerson].filter(l=>l.id!==id); save(); renderLog(); }
 
@@ -3007,6 +3171,29 @@ function generateSessionInsight(feeling){
     pain: `Worth taking seriously rather than pushing through. Ease off that specific exercise for now — you can swap it for something else that trains the same muscle using the 🔄 substitute button next time. If it doesn't settle within a few days, or it's getting worse, it's worth getting checked by a physio or doctor rather than guessing.`,
   };
   return map[feeling] || null;
+}
+async function fetchAISessionInsight(personKey, date, sessionLabel, feeling, notes){
+  const p = state.people[personKey];
+  const feelingLabel = (SESSION_FEELINGS.find(f=>f.id===feeling)||{}).label || feeling;
+  const isPainFlag = feeling==='pain';
+  const prompt = `You are a supportive, knowledgeable personal trainer texting a client after their workout. ${p.name} just finished a "${sessionLabel}" session and rated it "${feelingLabel}".${notes ? ` They left this note: "${notes}"` : ' They didn\u2019t leave a note.'}
+
+Write a short reply (2-4 sentences, plain text, no markdown, no headers). ${notes ? 'Respond directly to what they actually wrote — if they mention something concrete (low energy, resting too long, a distraction, time pressure, feeling strong, anything specific), address that specifically with a practical tip for next time, not a generic response.' : 'Since there\u2019s no note, just respond to the rating itself.'} Keep it warm and human, not corporate, and skip generic filler like "great job".${isPainFlag ? ' They flagged something hurt or felt off — take this seriously: suggest easing off that specific movement, and if it continues suggest getting it looked at by a physio or doctor rather than pushing through. Do not try to diagnose what it is.' : ''}`;
+  try{
+    const text = await callGemini(prompt);
+    const insight = lastSessionInsight[personKey];
+    if(insight && insight.sessionLabel===sessionLabel && insight.feeling===feeling){
+      insight.text = text.trim();
+      insight.aiLoading = false;
+      insight.aiGenerated = true;
+      if(currentTab==='workouts' && currentPerson===personKey) renderWorkouts();
+    }
+  }catch(e){
+    console.error('AI session insight failed, keeping the standard note:', e);
+    const insight = lastSessionInsight[personKey];
+    if(insight){ insight.aiLoading = false; }
+    if(currentTab==='workouts' && currentPerson===personKey) renderWorkouts();
+  }
 }
 function dismissSessionInsight(){ lastSessionInsight[currentPerson] = null; renderWorkouts(); }
 function onWorkoutDateChange(value){
@@ -3138,9 +3325,14 @@ function saveFullSession(){
   if(!loggedAny){ alert('Add at least one value to log.'); return; }
   const feeling = sessionFeeling[currentPerson];
   const notes = sessionNotesText[currentPerson];
+  const feedbackPersonKey = currentPerson;
   if(feeling){
     state.sessionFeedback[currentPerson].push({id:uid(), date, sessionLabel:session.label, feeling, notes});
-    lastSessionInsight[currentPerson] = {sessionLabel:session.label, feeling, notes, text:generateSessionInsight(feeling)};
+    // Show the reliable canned insight immediately, then upgrade it to an AI-personalised
+    // one (which actually responds to what they wrote in notes) once it arrives — if AI
+    // isn't configured or the call fails, the canned version just stays as-is, unchanged.
+    lastSessionInsight[currentPerson] = {sessionLabel:session.label, feeling, notes, text:generateSessionInsight(feeling), aiLoading:hasGemini()};
+    if(hasGemini()) fetchAISessionInsight(feedbackPersonKey, date, session.label, feeling, notes);
   } else {
     lastSessionInsight[currentPerson] = null;
   }
@@ -3179,6 +3371,40 @@ let nextTargetsFilter = {p1:'all', p2:'all'};
 function setNextTargetsFilter(val){ nextTargetsFilter[currentPerson] = val; renderWorkouts(); }
 let workoutProgressionFilter = {p1:null, p2:null};
 function setWorkoutProgressionFilter(val){ workoutProgressionFilter[currentPerson] = val; renderWorkouts(); }
+function getNextTargetsSummaryText(personKey){
+  const sessions = getSessionsWithExercises(personKey);
+  const filter = nextTargetsFilter[personKey] || 'all';
+  const sessionsToShow = filter==='all' ? sessions : sessions.filter(s=>s.id===filter);
+  const lines = [];
+  sessionsToShow.forEach(s=>{
+    s.exercises.forEach(e=>{
+      const loggedName = findLoggedNameForSlot(personKey, e.name);
+      if(!loggedName) return;
+      const suggestion = estimateWorkingWeight(personKey, loggedName, e.reps);
+      if(suggestion) lines.push(`${loggedName} (${s.label}): aim for ${suggestion.weight}kg × ${e.reps}`);
+    });
+  });
+  return lines;
+}
+async function aiExplainNextTargets(){
+  const statusEl = document.getElementById('ai-targets-note');
+  if(!statusEl) return;
+  const p = state.people[currentPerson];
+  const lines = getNextTargetsSummaryText(currentPerson);
+  if(!lines.length){ statusEl.textContent = 'Log a few sessions first so there\u2019s something to give tips on.'; return; }
+  statusEl.textContent = '✨ Thinking…';
+  const prompt = `You are a supportive, knowledgeable strength coach. Here are ${p.name}'s upcoming targets, calculated from their own logged history:
+${lines.join('\n')}
+
+In 2-4 short sentences (plain text, no markdown), give a brief, practical coaching note about this set of targets as a whole — things like pacing across the session, where to focus effort, or a general mindset tip. Don't just restate the numbers. Keep it specific to what's actually listed, not generic advice.`;
+  try{
+    const text = await callGemini(prompt);
+    statusEl.textContent = '✨ ' + text.trim();
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = `⚠ Couldn\u2019t reach AI (${e.message}). The targets above are calculated directly from your logged history either way.`;
+  }
+}
 function renderNextTargetsHTML(personKey){
   const sessions = getSessionsWithExercises(personKey);
   const filter = nextTargetsFilter[personKey] || 'all';
@@ -3325,6 +3551,8 @@ function renderWorkouts(){
         <span class="del-x" onclick="dismissSessionInsight()">✕</span>
       </div>
       <p style="font-size:13px;line-height:1.5;margin-top:8px;">${lastSessionInsight[currentPerson].text}</p>
+      ${lastSessionInsight[currentPerson].aiLoading ? `<p class="hint" style="margin-top:6px;">✨ Getting a more personal note based on what you wrote…</p>` : ''}
+      ${lastSessionInsight[currentPerson].aiGenerated ? `<p class="hint" style="margin-top:6px;">✨ Personalised by AI based on your note.</p>` : ''}
       ${lastSessionInsight[currentPerson].notes ? `<p class="hint" style="margin-top:8px;">Your note: "${lastSessionInsight[currentPerson].notes}"</p>` : ''}
     </div>` : ''}
     <div id="exercise-swap-sheet-root"></div>
@@ -3357,6 +3585,7 @@ function renderWorkouts(){
       <h3>🎯 Next session — ${p.name}</h3>
       <p class="hint">What to aim for each exercise next time, based on ${p.name}'s own logged history and 1RMs — always up to date, come back any week to check it.</p>
       ${renderNextTargetsHTML(currentPerson)}
+      ${hasGemini() ? `<div class="btn-row"><button class="secondary small" onclick="aiExplainNextTargets()">✨ Get AI coaching tips for this session</button></div><p class="hint" id="ai-targets-note" style="margin-top:6px;"></p>` : ''}
     </div>
     <div class="card">
       <h3>This week's sessions</h3>
