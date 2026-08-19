@@ -1171,7 +1171,7 @@ let revealedWeights = {}; // in-memory only, resets on reload — deliberate for
 let selectedBubble = null; // {weekStart, day} — the currently picked-up session bubble in Program
 let mealPrepMode = 'day'; // 'day' | 'week'
 let mealPrepDate = null; // set to todayStr() on first render of Meal Prep
-let expandedProgramDay = null; // which day's exercise list is expanded in the Program calendar
+let expandedProgramDay = null; // composite "weekStart|day" key of which exercise list is expanded
 let daySettingsSheetOpen = null; // {weekStart, day} — which day's settings sheet is open, or null
 let charts = {};
 let moreSheetOpen = false;
@@ -1460,7 +1460,7 @@ async function aiExplainAdjustment(){
   statusEl.textContent = '✨ Thinking…';
   const prompt = `You are an evidence-informed nutrition coach. ${p.name} is on a "${PHASES[p.phase].label.split(' \u2014 ')[0]}" phase. Their actual weight trend has been ${fmt1(sug.actualRate)} kg/week versus an expected ${fmt1(sug.expectedRate)} kg/week for that phase. Based on that gap, their calories are being adjusted by ${sug.adjustment>0?'+':''}${sug.adjustment} kcal/day.
 
-In 2-3 short sentences (plain text, no markdown), explain in plain terms why this adjustment makes sense given the gap between actual and expected trend, and reassure them this is a normal part of staying on track rather than a sign anything went wrong.`;
+In 6-9 sentences (plain text, no markdown, no bullet points), explain in depth why this adjustment makes sense: walk through the energy-balance math behind it (roughly how many kcal/day map to how much weight change per week, e.g. via the ~7700 kcal-per-kg-of-fat relationship), why adaptive adjustments like this are standard practice in evidence-based coaching rather than a sign something went wrong, and what would make this trend worth adjusting again in future (i.e. another sustained gap between actual and expected rate, not a single off day). Reference real physiological mechanisms (metabolic adaptation, water/glycogen fluctuation masking true fat trend, etc.) where relevant, but don't invent specific study citations or statistics you're not confident about.`;
   try{
     const text = await callGemini(prompt);
     statusEl.textContent = '✨ ' + text.trim();
@@ -1573,14 +1573,14 @@ function svgLineChart(series, opts){
 /* =========================================================
    RENDER: PROGRAM (calendar + auto split)
    ========================================================= */
-function renderProgram(){
+let programWeek2Expanded = {p1:false, p2:false};
+function toggleWeek2(){ programWeek2Expanded[currentPerson] = !programWeek2Expanded[currentPerson]; renderProgram(); }
+function renderWeekBlockHTML(weekStart, weekBadgeLabel){
   const p = state.people[currentPerson];
-  const weekStart = getMondayOfWeek(new Date());
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
   const split = getWeeklySplit(currentPerson);
   const scheduled = Object.values(assignments).filter(v=>v.session && v.session!=='home').length;
   const homeUsed = Object.values(assignments).some(v=>v.session==='home');
-  daySettingsSheetOpen = null; // any open sheet is stale once we do a full re-render
 
   const todayStrVal = todayStr();
   const weekEndStr = addDaysStr(weekStart, 6);
@@ -1590,7 +1590,6 @@ function renderProgram(){
   const trackedDays = DAY_LABELS.filter(d=> assignments[d].session || assignments[d].activity);
   const doneDays = trackedDays.filter(d=> assignments[d].completed);
   const weekGoalHit = trackedDays.length>0 && doneDays.length===trackedDays.length;
-  const weekStreak = computeWeekStreak(currentPerson);
   const dotsHTML = DAY_LABELS.map((day,i)=>{
     const dateStr = addDaysStr(weekStart, i);
     const isToday = dateStr===todayStrVal;
@@ -1605,11 +1604,10 @@ function renderProgram(){
     const isToday = dateStr===todayStrVal;
     const info = assignments[day];
     const assigned = info.session;
-    const isPicked = selectedBubble && selectedBubble.day===day;
+    const isPicked = selectedBubble && selectedBubble.day===day && selectedBubble.weekStart===weekStart;
     const dateNum = new Date(dateStr+'T00:00:00').getDate();
     const activityDef = info.activity ? getActivityDef(info.activity) : null;
     const activityLabel = activityDef ? (activityDef.id==='other' ? (info.activityOther||'Other activity') : activityDef.label) : null;
-    const activityChip = activityDef ? `<span class="badge home" style="margin-left:6px;">${activityDef.icon} ${activityLabel}</span>` : '';
 
     let exercises = null, color = null, title = null, sub = null;
     if(assigned && assigned!=='home'){
@@ -1627,21 +1625,22 @@ function renderProgram(){
       title = '🏠 Home Workout';
       sub = `${exercises.length} moves${info.trainTime?` · ~${info.trainTime}`:''}`;
     }
-    const isExpanded = expandedProgramDay===day;
+    const expandKey = weekStart+'|'+day;
+    const isExpanded = expandedProgramDay===expandKey;
 
     let bodyHTML;
     if(exercises){
       bodyHTML = `
         <div class="cal-check ${info.completed?'checked':''}" onclick="event.stopPropagation();toggleSessionCompleted('${weekStart}','${day}')" title="Mark done"></div>
         <div class="cal-bar" style="background:${color};"></div>
-        <div class="cal-content" onclick="toggleExpandDay('${day}')">
+        <div class="cal-content" onclick="toggleExpandDay('${weekStart}','${day}')">
           <div class="cal-title">${title} ${info.working?'<span style="font-size:11px;">🥡</span>':''}</div>
           <div class="cal-sub">${sub}</div>
         </div>
         <div class="cal-move-btn ${isPicked?'selected':''}" onclick="event.stopPropagation();clickBubble('${weekStart}','${day}')" title="Move to another day">⇄</div>
         <div class="cal-move-btn" onclick="event.stopPropagation();clearDaySession('${weekStart}','${day}')" title="Remove this session">✕</div>`;
     } else {
-      bodyHTML = `<div class="cal-add-row" onclick="handleEmptyDayTap('${weekStart}','${day}')">${selectedBubble ? '+ Move session here' : (!homeUsed ? '+ Add — tap for Home Workout' : 'Rest day')}</div>`;
+      bodyHTML = `<div class="cal-add-row" onclick="handleEmptyDayTap('${weekStart}','${day}')">${selectedBubble ? '+ Move session here' : '+ Add a session'}</div>`;
     }
     const activityRowHTML = activityDef
       ? `<div class="cal-activity-row"><span class="badge home">${activityDef.icon} ${activityLabel}${info.activityDuration||activityDef.defaultDuration?` · ${info.activityDuration||activityDef.defaultDuration} min`:''}</span> <span class="cal-check ${info.completed && !exercises?'checked':''}" style="width:18px;height:18px;vertical-align:middle;display:inline-block;" onclick="toggleSessionCompleted('${weekStart}','${day}')" title="Mark done"></span> <span class="del-x" onclick="clearDayActivity('${weekStart}','${day}')">✕ remove</span></div>`
@@ -1661,14 +1660,10 @@ function renderProgram(){
       ${isExpanded && exercises ? `<div class="cal-expanded">${planTable(exercises, currentPerson)}</div>` : ''}`;
   }).join('');
 
-  document.getElementById('main').innerHTML = `
-    <h1 class="page-title">Program</h1>
-    <p class="page-sub">${p.name} — ${TRAINING_EXP[p.experience].label.split(' (')[0]}, ${p.daysPerWeek} days/week. Tap ✓ to mark a session done, ⇄ to move it, ✕ to remove it. Add basketball, golf, walks and more from the "+ Add activity" line on any day — including days you're already training.</p>
-    ${personToggleHTML(currentPerson,'setProgramPerson')}
-    ${weekStreak>0 ? `<div class="progress-chip" style="display:inline-flex;margin-bottom:14px;background:var(--p2-dim);color:var(--p2);font-weight:700;">🔥 ${weekStreak} Week Streak</div>` : ''}
+  return `
     <div class="cal-week-head">
       <div>
-        <div class="cal-week-range">${rangeLabel}<span class="cal-week-badge">This week</span></div>
+        <div class="cal-week-range">${rangeLabel}<span class="cal-week-badge">${weekBadgeLabel}</span></div>
         <p class="hint" style="margin-top:4px;">${scheduled} / ${split.length} sessions scheduled ${homeUsed?'· home workout used':'· 1 home workout swap available'}</p>
         <div class="cal-week-dots">${dotsHTML}</div>
         ${weekGoalHit ? `<p class="hint" style="color:var(--success);margin-top:6px;font-weight:700;">🎉 Week complete — every planned session/activity is ticked off!</p>` : `<p class="hint" style="margin-top:6px;">${doneDays.length}/${trackedDays.length} done this week</p>`}
@@ -1677,17 +1672,39 @@ function renderProgram(){
     </div>
     <div class="card" style="padding:4px 16px;">${rows}</div>
     <div class="btn-row"><button class="secondary small" onclick="regenerateWeekSchedule('${currentPerson}','${weekStart}')">🔄 Auto-fill week</button></div>
+  `;
+}
+function renderProgram(){
+  const p = state.people[currentPerson];
+  const weekStart = getMondayOfWeek(new Date());
+  const week2Start = addDaysStr(weekStart, 7);
+  const split = getWeeklySplit(currentPerson);
+  daySettingsSheetOpen = null; // any open sheet is stale once we do a full re-render
+  const weekStreak = computeWeekStreak(currentPerson);
+  const week2Expanded = programWeek2Expanded[currentPerson];
+
+  document.getElementById('main').innerHTML = `
+    <h1 class="page-title">Program</h1>
+    <p class="page-sub">${p.name} — ${TRAINING_EXP[p.experience].label.split(' (')[0]}, ${p.daysPerWeek} days/week. Tap ✓ to mark a session done, ⇄ to move it, ✕ to remove it. Add basketball, golf, walks and more from the "+ Add activity" line on any day — including days you're already training.</p>
+    ${personToggleHTML(currentPerson,'setProgramPerson')}
+    ${weekStreak>0 ? `<div class="progress-chip" style="display:inline-flex;margin-bottom:14px;background:var(--p2-dim);color:var(--p2);font-weight:700;">🔥 ${weekStreak} Week Streak</div>` : ''}
+    ${renderWeekBlockHTML(weekStart, 'This week')}
+    <div class="btn-row" style="margin-top:6px;">
+      <button class="secondary small" onclick="toggleWeek2()">${week2Expanded ? '▲ Minimise next week' : '▼ Show next week'}</button>
+    </div>
+    ${week2Expanded ? `<div style="margin-top:12px;">${renderWeekBlockHTML(week2Start, 'Next week')}</div>` : ''}
     <div class="card" style="margin-top:20px;">
       <h3>Full weekly session library</h3>
       ${split.map(s=>`<div style="margin-bottom:14px;"><strong style="font-size:13px;">${s.label}</strong>${planTable(s.exercises, currentPerson)}</div>`).join('')}
       <p class="hint">Change days/week or experience level any time in Setup — the plan regenerates automatically.</p>
     </div>
     <div class="card">
-      <h3>🔬 Ask AI about an exercise</h3>
-      <p class="hint">Extra context on technique, muscles worked, or common mistakes for anything in your splits — supplementary to the cues below, and worth a pinch of skepticism since it's generated fresh each time rather than pre-checked.</p>
-      <input list="program-exercise-list" id="program-ai-exercise" placeholder="Type or pick an exercise from your program">
-      <datalist id="program-exercise-list">${[...new Set(split.flatMap(s=>s.exercises.filter(e=>e.group!=='cardio').map(e=>e.name)))].map(n=>`<option value="${n}">`).join('')}</datalist>
-      <div class="btn-row"><button class="secondary small" onclick="aiResearchExercise()">🔬 Ask AI</button></div>
+      <h3>🔬 Ask AI about a session</h3>
+      <p class="hint">In-depth feedback on a whole session's structure and exercise selection — not just one exercise. Worth a pinch of skepticism since it's generated fresh each time rather than pre-checked, unlike the cues below.</p>
+      <select id="program-ai-session">
+        ${split.map(s=>`<option value="${s.id}">${s.label}</option>`).join('')}
+      </select>
+      <div class="btn-row"><button class="secondary small" onclick="aiResearchSession()">🔬 Ask AI</button></div>
       <p class="hint" id="program-ai-status" style="margin-top:8px;line-height:1.5;"></p>
     </div>
     <div class="card">
@@ -1702,14 +1719,19 @@ function renderProgram(){
     <div id="day-settings-sheet-root"></div>
   `;
 }
-async function aiResearchExercise(){
-  const input = document.getElementById('program-ai-exercise');
+async function aiResearchSession(){
+  const select = document.getElementById('program-ai-session');
   const statusEl = document.getElementById('program-ai-status');
-  if(!input || !statusEl) return;
-  const name = input.value.trim();
-  if(!name){ statusEl.textContent = 'Type or pick an exercise first.'; return; }
+  if(!select || !statusEl) return;
+  const sessionId = select.value;
+  const split = getWeeklySplit(currentPerson);
+  const session = split.find(s=>s.id===sessionId);
+  if(!session){ statusEl.textContent = 'Pick a session first.'; return; }
   statusEl.textContent = '🔬 Researching…';
-  const prompt = `You are a knowledgeable, careful strength coach. Give a brief, practical rundown of the exercise "${name}" for someone following a structured gym program: which muscles it primarily targets, one or two common technique mistakes to watch for, and one tip for getting more out of it. 3-5 short sentences, plain text, no markdown or headers. Be accurate and specific — if you're not confident about a particular detail, keep that part general rather than inventing specifics.`;
+  const exerciseList = session.exercises.map(e => e.group==='cardio' ? `${e.name} (cardio finisher, ${e.reps})` : `${e.name} — ${e.sets}×${e.reps}`).join('; ');
+  const prompt = `You are a knowledgeable, evidence-informed strength coach reviewing a client's program. Here is their "${session.label}" session in full: ${exerciseList}.
+
+Give in-depth feedback (7-10 sentences, plain text, no markdown, no headers, no bullet points) on this session as a whole — not on any single exercise in isolation. Cover: whether the exercise selection is well balanced across the muscles/movement patterns this session is meant to target, whether the exercise order makes sense for fatigue management (e.g. compound lifts before isolation, taxing lifts before smaller ones), anything missing or redundant, and one or two concrete changes that would meaningfully improve the session. Ground your reasoning in established resistance training principles (exercise order and fatigue management, movement pattern balance, volume distribution) rather than vague generalities — reference the relevant principle by name where it's genuinely applicable, but don't invent specific studies or statistics you're not confident about. Be specific to what's actually listed in this session, not generic programming advice.`;
   try{
     const text = await callGemini(prompt);
     statusEl.textContent = text.trim();
@@ -1725,8 +1747,9 @@ function toggleSessionCompleted(weekStart, day){
   if(currentTab==='workouts') renderWorkouts(); else renderProgram();
 }
 function setProgramPerson(key){ currentPerson=key; selectedBubble=null; expandedProgramDay=null; renderProgram(); }
-function toggleExpandDay(day){
-  expandedProgramDay = (expandedProgramDay===day) ? null : day;
+function toggleExpandDay(weekStart, day){
+  const key = weekStart+'|'+day;
+  expandedProgramDay = (expandedProgramDay===key) ? null : key;
   renderProgram();
 }
 function assignDay(weekStart, day, value){
@@ -1737,32 +1760,62 @@ function assignDay(weekStart, day, value){
 }
 function handleEmptyDayTap(weekStart, day){
   if(selectedBubble){ clickEmptySlot(weekStart, day); return; }
+  openSessionPickerForDay(weekStart, day);
+}
+function openSessionPickerForDay(weekStart, day){
+  const split = getWeeklySplit(currentPerson);
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
-  const homeUsedNow = Object.values(assignments).some(v=>v.session==='home');
-  if(!homeUsedNow){ assignDay(weekStart, day, 'home'); }
+  const root = document.getElementById('day-settings-sheet-root');
+  if(!root) return;
+  const options = [...split.map(s=>({id:s.id, label:s.label})), {id:'home', label:'🏠 Home Workout'}];
+  root.innerHTML = `
+    <div class="more-sheet-overlay" onclick="if(event.target===this) closeDaySettingsSheet()">
+      <div class="more-sheet">
+        <div class="sheet-handle"></div>
+        <div style="padding:0 16px 16px 16px;max-height:60vh;overflow-y:auto;">
+          <h3 style="margin:0 0 10px 0;">Add a session — ${day}</h3>
+          ${options.map(o=>{
+            const usedDay = DAY_LABELS.find(d=>assignments[d].session===o.id);
+            return `<div class="sheet-item" onclick="assignSpecificSession('${weekStart}','${day}','${o.id}')">${o.label}${usedDay?` <span class="hint">(currently ${usedDay} \u2014 will move here)</span>`:''}</div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>`;
+}
+function assignSpecificSession(weekStart, day, sessionId){
+  const assignments = ensureWeekSchedule(currentPerson, weekStart);
+  // If this session is already assigned to a different day this week, move it rather than duplicate it
+  DAY_LABELS.forEach(d=>{ if(d!==day && assignments[d].session===sessionId) assignments[d].session = null; });
+  assignments[day].session = sessionId;
+  assignments[day].completed = false;
+  save();
+  closeDaySettingsSheet();
+  renderProgram();
 }
 function clickBubble(weekStart, day){
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
-  if(selectedBubble && selectedBubble.day !== day){
-    const a = assignments[selectedBubble.day].session;
+  if(selectedBubble && !(selectedBubble.day===day && selectedBubble.weekStart===weekStart)){
+    const sourceAssignments = ensureWeekSchedule(currentPerson, selectedBubble.weekStart);
+    const a = sourceAssignments[selectedBubble.day].session;
     const b = assignments[day].session;
     assignments[day].session = a;
-    assignments[selectedBubble.day].session = b;
+    sourceAssignments[selectedBubble.day].session = b;
     selectedBubble = null;
     save();
     renderProgram();
     return;
   }
-  selectedBubble = (selectedBubble && selectedBubble.day===day) ? null : {weekStart, day};
+  selectedBubble = (selectedBubble && selectedBubble.day===day && selectedBubble.weekStart===weekStart) ? null : {weekStart, day};
   renderProgram();
 }
 function clickEmptySlot(weekStart, day){
   if(!selectedBubble){ return; }
-  if(selectedBubble.day === day){ selectedBubble=null; renderProgram(); return; }
+  if(selectedBubble.day===day && selectedBubble.weekStart===weekStart){ selectedBubble=null; renderProgram(); return; }
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
-  const a = assignments[selectedBubble.day].session;
+  const sourceAssignments = ensureWeekSchedule(currentPerson, selectedBubble.weekStart);
+  const a = sourceAssignments[selectedBubble.day].session;
   assignments[day].session = a;
-  assignments[selectedBubble.day].session = null;
+  sourceAssignments[selectedBubble.day].session = null;
   selectedBubble = null;
   save();
   renderProgram();
@@ -2011,9 +2064,34 @@ function renderMealDayView(){
       <p class="hint" style="margin-top:12px;">This is the suggested plan, scaled to today's target — swap anything with ⋯. Log what you actually eat in MyFitnessPal, then punch the day's totals into the Daily Log tab for your summary and trend.</p>
       ${cyclePhase ? `<p class="hint" style="margin-top:8px;">Cycle day ${cyclePhase.cycleDay}/${cyclePhase.len} — <strong style="color:var(--text);">${cyclePhase.phase} phase</strong>. ${cyclePhase.note}</p>` : ''}
     </div>
+    ${(p.supplements||[]).some(s=>/creatine/i.test(s.name)) ? `
+    <div class="card">
+      <h3>💊 Creatine timing — today</h3>
+      <div class="btn-row"><button class="secondary small" onclick="aiCreatineTiming('${dateStr}')">✨ When should I take it today?</button></div>
+      <p class="hint" id="creatine-ai-status" style="margin-top:8px;line-height:1.5;"></p>
+    </div>` : ''}
     <div class="card meal-timeline">${timelineHTML}</div>
     <div class="btn-row"><button class="secondary small" onclick="applyPlanToWeek()">⚡ Use this day's picks for the whole week</button></div>
   `;
+}
+async function aiCreatineTiming(dateStr){
+  const statusEl = document.getElementById('creatine-ai-status');
+  if(!statusEl) return;
+  const p = state.people[currentPerson];
+  const {weekStart, label} = dateToWeekAndDay(dateStr);
+  const info = ensureWeekSchedule(currentPerson, weekStart)[label];
+  const isTraining = !!info.session;
+  statusEl.textContent = '✨ Thinking…';
+  const prompt = `You are an evidence-informed sports nutrition coach. ${p.name} takes creatine daily. Today is a ${isTraining?'training':'rest'} day${isTraining && info.trainTime ? `, training at approximately ${info.trainTime}`:''}${info.working?', and it\u2019s also a work shift day for them':''}.
+
+Give an in-depth but honest recommendation (5-7 sentences, plain text, no markdown) for when today specifically makes sense to take their creatine dose. Be accurate to the actual research: total daily consistency is what actually matters for creatine's benefits (muscle saturation builds up over days to weeks regardless of exact timing), and the evidence for timing relative to training is weak/mixed at best — there's a modest theoretical case for taking it with a meal containing carbs/protein (may aid uptake via the insulin response) either before or after training, but don't overstate this as a big lever. Explain the actual reasoning, not just a bare recommendation, so ${p.name} understands why timing matters this little. Suggest a specific practical slot for today given their schedule above.`;
+  try{
+    const text = await callGemini(prompt);
+    statusEl.textContent = text.trim();
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+  }
 }
 function getSlotTargetCalories(personKey, weekStart, day, slot){
   const t = calcTargets(personKey);
@@ -3051,7 +3129,7 @@ Today's actuals: ${e.calories!=null?`${e.calories} kcal (${summary.calPct}% of t
 ${summary.weightNote ? `Weight trend context: ${summary.weightNote}` : ''}
 Tomorrow: ${summary.tomorrowNotes.join(' ')}
 
-Write one flowing coaching passage (5-8 sentences, plain text, no markdown, no headers, no bullet points) that covers: an honest, specific read on how today actually went (not generic praise — name what was good or what to tighten up), the weight trend context in plain terms, and a heads-up on tomorrow's plan. Write it as a single natural message, not a list. Be direct and genuinely useful, not falsely upbeat.`;
+Write one flowing, in-depth coaching passage (8-12 sentences, plain text, no markdown, no headers, no bullet points) that covers: an honest, specific read on how today actually went (not generic praise — name what was good or what to tighten up, and explain WHY it matters physiologically, e.g. what falling short on protein actually does to muscle retention, or why a single high/low day doesn't undo weekly progress), the weight trend in plain terms grounded in real context (water retention, glycogen, digestion affecting day-to-day scale weight vs the true trend), and a heads-up on tomorrow's plan with one concrete, specific action to carry forward. Write it as a single natural message, not a list. Be direct and genuinely useful, not falsely upbeat — reference real nutrition science mechanisms where relevant, but don't invent specific studies or statistics you're not confident about.`;
   try{
     const text = await callGemini(prompt);
     if(lastDailySummary[personKey] && lastDailySummary[personKey].date===date){
@@ -3182,7 +3260,7 @@ async function fetchAISessionInsight(personKey, date, sessionLabel, feeling, not
   const isPainFlag = feeling==='pain';
   const prompt = `You are a supportive, knowledgeable personal trainer texting a client after their workout. ${p.name} just finished a "${sessionLabel}" session and rated it "${feelingLabel}".${notes ? ` They left this note: "${notes}"` : ' They didn\u2019t leave a note.'}
 
-Write a short reply (2-4 sentences, plain text, no markdown, no headers). ${notes ? 'Respond directly to what they actually wrote — if they mention something concrete (low energy, resting too long, a distraction, time pressure, feeling strong, anything specific), address that specifically with a practical tip for next time, not a generic response.' : 'Since there\u2019s no note, just respond to the rating itself.'} Keep it warm and human, not corporate, and skip generic filler like "great job".${isPainFlag ? ' They flagged something hurt or felt off — take this seriously: suggest easing off that specific movement, and if it continues suggest getting it looked at by a physio or doctor rather than pushing through. Do not try to diagnose what it is.' : ''}`;
+Write an in-depth reply (5-8 sentences, plain text, no markdown, no headers, no bullet points). ${notes ? `Respond directly and specifically to what they actually wrote. Diagnose the likely cause behind what they described (for example: if they mention low energy or feeling lazy, consider whether it's sleep, under-fuelling, resting too long between sets and losing intensity, or training at a bad time of day for them; if they mention a specific session time of day feeling flat, consider circadian/energy patterns and pre-session nutrition timing), then give concrete, practical tips to prevent it happening again next time — specific enough to act on, not generic "get more sleep" advice unless that's genuinely the most likely cause.` : 'Since there\u2019s no note, just respond to the rating itself with a useful, specific observation.'} Keep it warm and human, not corporate, and skip generic filler like "great job".${isPainFlag ? ' They flagged something hurt or felt off — take this seriously: suggest easing off that specific movement, and if it continues suggest getting it looked at by a physio or doctor rather than pushing through. Do not try to diagnose what it is.' : ''}`;
   try{
     const text = await callGemini(prompt);
     const insight = lastSessionInsight[personKey];
@@ -3401,7 +3479,7 @@ async function aiExplainNextTargets(){
   const prompt = `You are a supportive, knowledgeable strength coach. Here are ${p.name}'s upcoming targets, calculated from their own logged history:
 ${lines.join('\n')}
 
-In 2-4 short sentences (plain text, no markdown), give a brief, practical coaching note about this set of targets as a whole — things like pacing across the session, where to focus effort, or a general mindset tip. Don't just restate the numbers. Keep it specific to what's actually listed, not generic advice.`;
+In 6-9 sentences (plain text, no markdown, no bullet points), give in-depth, practical coaching on this set of targets as a whole: how to sequence effort across the session (which lifts deserve the most focus/freshness), realistic expectations for progression at this stage, and a concrete cue or two for approaching the top sets specifically. Ground this in real strength-training principles (progressive overload, fatigue management, proximity to failure) rather than vague generalities, but don't invent specific study citations or numbers you're not confident about. Don't just restate the numbers back — give real insight specific to what's actually listed.`;
   try{
     const text = await callGemini(prompt);
     statusEl.textContent = '✨ ' + text.trim();
