@@ -26,8 +26,8 @@
      key itself is NOT set here; it's a server-side secret (supabase secrets set GEMINI_API_KEY=...),
      never exposed to the browser. -->
 <script>
-  window.SUPABASE_URL = "YOUR_SUPABASE_PROJECT_URL_HERE";
-  window.SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY_HERE";
+  window.SUPABASE_URL = "https://bqhzwoslyijuvppzgmyw.supabase.co";
+  window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxaHp3b3NseWlqdXZwcHpnbXl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY4NjU4NjMsImV4cCI6MjEwMjQ0MTg2M30.8xHIe4Uie9d_nJFaQrQAIyuoEa1AanhsnWCrX5vieNI";
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
@@ -2958,23 +2958,25 @@ function renderLog(){
         <span class="del-x" onclick="dismissDailySummary()">✕</span>
       </div>
       ${summary.calPct!=null ? `<p class="mono" style="font-size:17px;margin-top:8px;">${summary.entry.calories} / ${summary.dayTarget} kcal <span class="hint">(${summary.calPct}%)</span></p>` : ''}
-      ${summary.weightNote ? `<p class="hint" style="margin-top:10px;">${summary.weightNote}</p>` : ''}
-      ${summary.workoutNote ? `<p class="hint" style="margin-top:6px;">${summary.workoutNote}</p>` : ''}
-      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
-        ${summary.tips.map(tip=>`<p style="font-size:13px;margin-top:8px;line-height:1.5;">💡 ${tip}</p>`).join('')}
+      <div style="margin-top:12px;">
+        ${summary.aiText ? `
+          <p style="font-size:13px;line-height:1.6;">✨ ${summary.aiText}</p>
+        ` : summary.aiLoading ? `
+          <p class="hint">✨ Writing your coaching note…</p>
+        ` : `
+          ${summary.aiError ? `<p class="hint" style="color:var(--danger);margin-bottom:10px;">⚠ AI note failed: ${summary.aiError} — showing the standard breakdown instead.</p>` : ''}
+          ${summary.weightNote ? `<p class="hint">${summary.weightNote}</p>` : ''}
+          ${summary.workoutNote ? `<p class="hint" style="margin-top:6px;">${summary.workoutNote}</p>` : ''}
+          <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+            ${summary.tips.map(tip=>`<p style="font-size:13px;margin-top:8px;line-height:1.5;">💡 ${tip}</p>`).join('')}
+          </div>
+          <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+            <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px;">Looking at tomorrow</p>
+            <p style="font-size:13px;line-height:1.5;">${summary.couldveBeenBetter}</p>
+            ${summary.tomorrowNotes.map(n=>`<p style="font-size:13px;margin-top:6px;line-height:1.5;">${n}</p>`).join('')}
+          </div>
+        `}
       </div>
-      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
-        <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px;">Looking at tomorrow</p>
-        <p style="font-size:13px;line-height:1.5;">${summary.couldveBeenBetter}</p>
-        ${summary.tomorrowNotes.map(n=>`<p style="font-size:13px;margin-top:6px;line-height:1.5;">${n}</p>`).join('')}
-      </div>
-      ${summary.aiLoading ? `<p class="hint" style="margin-top:12px;">✨ Getting a fuller coaching note…</p>` : ''}
-      ${summary.aiError ? `<p class="hint" style="margin-top:12px;color:var(--danger);">⚠ AI note failed: ${summary.aiError}</p>` : ''}
-      ${summary.aiText ? `
-      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-        <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px;">✨ Coach's note</p>
-        <p style="font-size:13px;line-height:1.5;">${summary.aiText}</p>
-      </div>` : ''}
     </div>` : '';
   document.getElementById('main').innerHTML = `
     <h1 class="page-title">Daily Log</h1>
@@ -3041,13 +3043,15 @@ async function fetchAIDailyInsight(personKey, date){
   const summary = lastDailySummary[personKey];
   if(!summary) return;
   const p = state.people[personKey];
+  const t = calcTargets(personKey);
   const e = summary.entry;
   const prompt = `You are a supportive, evidence-informed nutrition and training coach texting a client at the end of their day. ${p.name} is on a "${PHASES[p.phase].label.split(' \u2014 ')[0]}" phase, target ${summary.dayTarget} kcal today.
 
-Today's actuals: ${e.calories!=null?`${e.calories} kcal (${summary.calPct}% of target)`:'calories not logged'}, ${e.protein!=null?`${e.protein}g protein`:'protein not logged'}, ${e.carbs!=null?`${e.carbs}g carbs`:'carbs not logged'}, ${e.fat!=null?`${e.fat}g fat`:'fat not logged'}. Workout done today: ${e.workoutDone?'yes':'no'}.
-${summary.weightNote ? `Context: ${summary.weightNote}` : ''}
+Today's actuals: ${e.calories!=null?`${e.calories} kcal (${summary.calPct}% of target)`:'calories not logged'}, ${e.protein!=null?`${e.protein}g protein${t.protein?` of a ${t.protein}g target`:''}`:'protein not logged'}, ${e.carbs!=null?`${e.carbs}g carbs${t.carbs?` of a ${t.carbs}g target`:''}`:'carbs not logged'}, ${e.fat!=null?`${e.fat}g fat`:'fat not logged'}. Workout done today: ${e.workoutDone?'yes':'no'}.
+${summary.weightNote ? `Weight trend context: ${summary.weightNote}` : ''}
+Tomorrow: ${summary.tomorrowNotes.join(' ')}
 
-Write a short (3-5 sentences, plain text, no markdown/headers), honest and specific coaching note about today, and one clear thing to focus on tomorrow. Be direct and genuinely helpful, not falsely upbeat — if something was off, say so plainly but constructively. Don't just restate the numbers back at them, give real insight.`;
+Write one flowing coaching passage (5-8 sentences, plain text, no markdown, no headers, no bullet points) that covers: an honest, specific read on how today actually went (not generic praise — name what was good or what to tighten up), the weight trend context in plain terms, and a heads-up on tomorrow's plan. Write it as a single natural message, not a list. Be direct and genuinely useful, not falsely upbeat.`;
   try{
     const text = await callGemini(prompt);
     if(lastDailySummary[personKey] && lastDailySummary[personKey].date===date){
@@ -3057,7 +3061,7 @@ Write a short (3-5 sentences, plain text, no markdown/headers), honest and speci
       if(currentTab==='log' && currentPerson===personKey) renderLog();
     }
   }catch(e){
-    console.error('AI daily insight failed, keeping the standard tips:', e);
+    console.error('AI daily insight failed, falling back to the standard tips:', e);
     if(lastDailySummary[personKey]){ lastDailySummary[personKey].aiLoading = false; lastDailySummary[personKey].aiError = e.message; }
     if(currentTab==='log' && currentPerson===personKey) renderLog();
   }
