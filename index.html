@@ -20,14 +20,14 @@
 
 <!-- ============ Supabase: fill these in with your project's own values ============
      Dashboard → Project Settings → API → "Project URL" and "anon public" key.
-     Never put your service_role key here — only the public anon key belongs in client code. -->
+     Never put your service_role key here — only the public anon key belongs in client code.
+     AI features (recipe estimation, coaching notes) also run through this project, via the
+     gemini-proxy Edge Function — see supabase/functions/gemini-proxy/index.ts. Your Gemini
+     key itself is NOT set here; it's a server-side secret (supabase secrets set GEMINI_API_KEY=...),
+     never exposed to the browser. -->
 <script>
   window.SUPABASE_URL = "YOUR_SUPABASE_PROJECT_URL_HERE";
   window.SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY_HERE";
-  // Google AI Studio → Get API key. Used client-side for the recipe AI-assist feature only —
-  // see the security note in the AI section of the script below before you rely on this.
-  window.GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE";
-  window.GEMINI_MODEL = "gemini-3.5-flash"; // change here if Google renames/retires this model
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
@@ -440,36 +440,37 @@ function updateSyncIndicator(){
 }
 function uid(){ return Math.random().toString(36).slice(2,10); }
 
-// --- Gemini AI: currently used for one thing only — estimating macros/ingredients when
-// you paste in a recipe under Meal Prep → My Recipes. Everything else in this app (nutrition
-// targets, workout programming, meal suggestions, exercise substitutions) is deterministic
-// logic, not AI — that's deliberate, not a gap, since those need to be reliable and free.
-// SECURITY NOTE: this key is used directly from the browser, which means anyone who views
-// this page's source or network tab can see it. Fine for a private two-person app where you
-// trust who has the link, but don't treat it as a secret the way you would on a real backend.
+// --- Gemini AI, routed through a Supabase Edge Function (supabase/functions/gemini-proxy) ---
+// Calling Gemini directly from the browser hits CORS rejections on Google's end fairly often
+// (their server doesn't reliably allow the custom auth header browsers are required to
+// preflight) — routing through your own Edge Function avoids that entirely, since it's a
+// server-to-server call from there, and it also keeps your Gemini key off the client
+// completely instead of just accepting the exposure as a tradeoff.
+// Setup: supabase functions deploy gemini-proxy, then supabase secrets set GEMINI_API_KEY=...
 function hasGemini(){
-  return typeof window !== 'undefined' && !!window.GEMINI_API_KEY && window.GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE';
+  return hasSharedStorage(); // the proxy lives on the same Supabase project as your data
 }
 async function callGemini(prompt, opts){
   opts = opts || {};
-  if(!hasGemini()) throw new Error('No Gemini API key configured');
-  const model = window.GEMINI_MODEL || 'gemini-3.5-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-  const body = { contents: [{ role:'user', parts: [{ text: prompt }] }] };
-  if(opts.json) body.generationConfig = { responseMimeType: 'application/json' };
+  if(!hasSharedStorage()) throw new Error('Supabase isn\u2019t configured, so the AI proxy function can\u2019t be reached');
+  const url = `${window.SUPABASE_URL}/functions/v1/gemini-proxy`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': window.GEMINI_API_KEY },
-    body: JSON.stringify(body),
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${window.SUPABASE_ANON_KEY}`,
+      'apikey': window.SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ prompt, json: !!opts.json }),
   });
-  if(!res.ok){
-    const errText = await res.text().catch(()=>'');
-    throw new Error(`Gemini API error ${res.status}: ${errText.slice(0,180)}`);
+  const data = await res.json().catch(()=>null);
+  if(!res.ok || !data){
+    const msg = (data && data.error) || `HTTP ${res.status}`;
+    throw new Error(`AI request failed: ${msg}`);
   }
-  const data = await res.json();
-  const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
-  const text = parts && parts[0] && parts[0].text;
-  if(!text) throw new Error('Gemini returned an empty response');
+  if(data.error) throw new Error(data.error);
+  if(!data.text) throw new Error('Gemini returned an empty response');
+  return data.text;
   return text;
 }
 async function aiEstimateRecipe(rawText){
