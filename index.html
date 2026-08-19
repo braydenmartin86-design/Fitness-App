@@ -498,14 +498,34 @@ async function callGeminiWithRetry(prompt, opts, onRetryStatus){
 // proper bulleted list. Recipe estimation (aiEstimateRecipe below) is unaffected — its JSON was
 // already structured, this is specifically about switching prose into bullets.
 async function callGeminiBullets(prompt, onRetryStatus){
-  const fullPrompt = prompt + `\n\nReturn ONLY this exact JSON shape, nothing else, no markdown fences: {"points": ["first point \u2014 1-3 sentences, substantive and specific", "second point", "..."]}. Use 4-7 points depending on how much there is to say \u2014 each point should still be genuinely in-depth, just structured as separate points rather than one flowing paragraph. Don't pad with a filler point just to hit a count.`;
+  const fullPrompt = prompt + `\n\nReturn ONLY this exact JSON shape, nothing else, no markdown fences, no text before or after it: {"points": ["first point \u2014 1-3 sentences, substantive and specific", "second point", "..."]}. Use 4-7 points depending on how much there is to say \u2014 each point should still be genuinely in-depth, just structured as separate points rather than one flowing paragraph. Don't pad with a filler point just to hit a count.`;
   const raw = await callGeminiWithRetry(fullPrompt, {json:true}, onRetryStatus);
-  const cleaned = raw.replace(/^```json\s*/i,'').replace(/```\s*$/,'').trim();
-  let parsed;
-  try{ parsed = JSON.parse(cleaned); }
-  catch(e){ throw new Error('AI returned an unexpected format'); }
-  if(!parsed.points || !Array.isArray(parsed.points) || !parsed.points.length) throw new Error('AI returned an unexpected format');
-  return parsed.points;
+  return parseBulletPoints(raw);
+}
+function parseBulletPoints(raw){
+  let text = (raw||'').trim();
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  // 1) straightforward parse
+  try{
+    const parsed = JSON.parse(text);
+    if(parsed && Array.isArray(parsed.points) && parsed.points.length) return parsed.points.map(String);
+  }catch(e){}
+  // 2) model sometimes adds stray text before/after the JSON despite instructions —
+  //    pull out just the {...} substring and try again
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if(first!==-1 && last>first){
+    try{
+      const parsed = JSON.parse(text.slice(first, last+1));
+      if(parsed && Array.isArray(parsed.points) && parsed.points.length) return parsed.points.map(String);
+    }catch(e){}
+  }
+  // 3) last resort — the response clearly isn't the JSON shape we asked for, but there might
+  //    still be real, useful content in there (e.g. it answered in a numbered/plain list
+  //    instead). Split on blank lines or list-style line starts rather than just failing.
+  const fallback = text.split(/\n{2,}|\n(?=[-•*]|\d+[.)])/).map(s=>s.replace(/^[-•*\d.)\s]+/,'').trim()).filter(s=>s.length>15);
+  if(fallback.length) return fallback;
+  throw new Error('AI returned an unexpected format');
 }
 function renderBulletPoints(points){
   return points.map(pt=>`<p style="font-size:13px;line-height:1.6;margin-top:8px;">• ${pt}</p>`).join('');
@@ -2173,7 +2193,7 @@ function renderMealPickerResults(weekStart, day, slot, dateStr, searchTerm){
 
   const rowHTML = m => `<div class="sheet-item" style="align-items:center;">
     <span onclick="selectMealForDate('${weekStart}','${day}','${slot}','${m.id}','${dateStr}')" style="display:flex;align-items:center;flex:1;min-width:0;cursor:pointer;">
-      <span class="tab-icon">${recipeEmoji(m)}</span><span style="flex:1;">${m.name}${m.portable?' 🥡':''}${m._leftover?' <span class="hint">(dinner leftover)</span>':''}</span>
+      <span class="tab-icon">${recipeEmoji(m)}</span><span style="flex:1;">${m.name}${m.portable?' 🥡':''}</span>
     </span>
     <span class="hint" style="margin:0 8px;flex-shrink:0;">${m.calories} kcal</span>
     <span style="cursor:pointer;color:var(--muted);margin-right:8px;flex-shrink:0;" onclick="event.stopPropagation();openEditMealSheet('${slot}','${m.id}')" title="Edit">✎</span>
@@ -3499,14 +3519,12 @@ function findLoggedNameForSlot(personKey, exerciseName){
   });
   return best;
 }
-let nextTargetsFilter = {p1:'all', p2:'all'};
-function setNextTargetsFilter(val){ nextTargetsFilter[currentPerson] = val; renderWorkouts(); }
 let workoutProgressionFilter = {p1:null, p2:null};
 function setWorkoutProgressionFilter(val){ workoutProgressionFilter[currentPerson] = val; renderWorkouts(); }
 function getNextTargetsSummaryText(personKey){
   const sessions = getSessionsWithExercises(personKey);
-  const filter = nextTargetsFilter[personKey] || 'all';
-  const sessionsToShow = filter==='all' ? sessions : sessions.filter(s=>s.id===filter);
+  const activeSession = sessionLogSelection ? sessions.find(s=>s.id===sessionLogSelection) : null;
+  const sessionsToShow = activeSession ? [activeSession] : [];
   const lines = [];
   sessionsToShow.forEach(s=>{
     s.exercises.forEach(e=>{
@@ -3539,8 +3557,7 @@ Give in-depth, practical coaching on this set of targets as a whole: how to sequ
 }
 function renderNextTargetsHTML(personKey){
   const sessions = getSessionsWithExercises(personKey);
-  const filter = nextTargetsFilter[personKey] || 'all';
-  const sessionsToShow = filter==='all' ? sessions : sessions.filter(s=>s.id===filter);
+  const activeSession = sessionLogSelection ? sessions.find(s=>s.id===sessionLogSelection) : null;
 
   const rowFor = (originalName, repsScheme) => {
     const loggedName = findLoggedNameForSlot(personKey, originalName);
@@ -3564,22 +3581,14 @@ function renderNextTargetsHTML(personKey){
     </div>`;
   };
 
-  const filterSelect = `
-    <select onchange="setNextTargetsFilter(this.value)" style="margin-bottom:12px;">
-      <option value="all" ${filter==='all'?'selected':''}>All sessions</option>
-      ${sessions.map(s=>`<option value="${s.id}" ${filter===s.id?'selected':''}>${s.label}</option>`).join('')}
-    </select>`;
-
-  const body = sessionsToShow.map(s=>{
-    const rows = s.exercises.map(e=>rowFor(e.name, e.reps)).filter(Boolean).join('');
-    return `
-      <div style="margin-bottom:16px;">
-        <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:2px;">${s.label}</p>
-        ${rows || `<div class="empty-state" style="margin-top:6px;">Nothing logged for this session yet.</div>`}
-      </div>`;
-  }).join('');
-
-  return filterSelect + body;
+  if(!activeSession){
+    return `<div class="empty-state">Pick a session above (in "Log today's session") to see its targets here.</div>`;
+  }
+  const rows = activeSession.exercises.map(e=>rowFor(e.name, e.reps)).filter(Boolean).join('');
+  return `
+    <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:2px;">${activeSession.label}</p>
+    ${rows || `<div class="empty-state" style="margin-top:6px;">Nothing logged for this session yet.</div>`}
+  `;
 }
 function renderWeekSessionSummaryHTML(personKey){
   const weekStart = getMondayOfWeek(new Date());
