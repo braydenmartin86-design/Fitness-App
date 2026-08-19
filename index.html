@@ -773,6 +773,16 @@ const EXERCISE_TIPS = {
   'Weighted Sit-Up': 'Control the lowering phase, avoid using momentum to swing up.',
   'Weighted Decline Sit-Up': 'Same as a sit-up but expect more range — keep the movement slow both ways.',
   'Ab Wheel Rollout': "Brace hard before you roll out, don't let your lower back sag, only go as far as you can control.",
+  'Chest Fly': 'Slight bend in the elbows held constant throughout, feel the stretch across your chest at the bottom, squeeze the pecs together at the top rather than pressing.',
+  'Iso-Lateral Chest Press': 'Each arm presses independently, so resist the urge to let your stronger side take over — keep both sides moving at the same pace and depth.',
+  'Bicep Curl Machine': 'Keep your upper arm pinned against the pad throughout, no swinging the shoulders, slow controlled lowering.',
+  'Tricep Extension Machine': 'Elbows stay fixed at your sides, only the forearm moves through the machine\u2019s arc, full extension without locking out hard.',
+  'Single-Leg Leg Press': 'Lower with control since you don\u2019t have a second leg to bail you out, keep the working knee tracking in line with your foot, don\u2019t let it cave inward.',
+  'Single-Leg Leg Extension': 'Slower tempo than the two-leg version — balance and control matter more here than load.',
+  'Iso-Lateral Row': 'Each arm pulls independently — squeeze your shoulder blade back on each rep rather than just bending the elbow, and keep both sides even.',
+  'Hip Adduction Machine': 'Controlled squeeze inward, avoid using momentum by swinging the weight — pause briefly at full contraction.',
+  'Hip Abduction Machine': 'Push outward against the pads with control, avoid leaning your torso to help — let the outer hip/glute do the work.',
+  'Calf Press (on Leg Press)': 'Use just your ankles/toes to press the platform, keep your knees slightly bent throughout (don\u2019t lock them), full stretch at the bottom.',
 };
 function getExerciseTip(name){
   if(EXERCISE_TIPS[name]) return EXERCISE_TIPS[name];
@@ -806,21 +816,21 @@ const SPLIT_MAP = {
 };
 const SESSION_MUSCLE_GROUPS = {
   'Full Body': ['chest','back','quads','hamstrings','shoulders','core'],
-  'Upper': ['chest','back','shoulders','biceps','triceps'],
+  'Upper': ['chest','back','shoulders','biceps','triceps','core'],
   'Lower': ['quads','hamstrings','calves','core'],
-  'Push': ['chest','shoulders','triceps'],
+  'Push': ['chest','shoulders','triceps','core'],
   'Pull': ['back','biceps','core'],
-  'Legs': ['quads','hamstrings','calves'],
+  'Legs': ['quads','hamstrings','calves','core'],
 };
 const EXERCISE_POOL = {
-  chest:      {beginner:['Machine Chest Press','Push-Up'], intermediate:['Barbell Bench Press','Incline Dumbbell Press'], advanced:['Barbell Bench Press','Incline Dumbbell Press','Weighted Dip']},
-  back:       {beginner:['Lat Pulldown','Seated Cable Row'], intermediate:['Assisted Pull-Up','Barbell Row','Lat Pulldown'], advanced:['Assisted Pull-Up (weighted)','Barbell Row','T-Bar Row','Seated Cable Row']},
+  chest:      {beginner:['Machine Chest Press','Push-Up','Chest Fly'], intermediate:['Barbell Bench Press','Incline Dumbbell Press','Iso-Lateral Chest Press','Chest Fly'], advanced:['Barbell Bench Press','Incline Dumbbell Press','Weighted Dip','Iso-Lateral Chest Press','Chest Fly']},
+  back:       {beginner:['Lat Pulldown','Seated Cable Row','Iso-Lateral Row'], intermediate:['Assisted Pull-Up','Barbell Row','Lat Pulldown','Iso-Lateral Row'], advanced:['Assisted Pull-Up (weighted)','Barbell Row','T-Bar Row','Seated Cable Row','Iso-Lateral Row']},
   shoulders:  {beginner:['Machine Shoulder Press','Lateral Raise'], intermediate:['Seated DB Shoulder Press','Lateral Raise','Face Pull'], advanced:['Standing Barbell OHP','Seated DB Shoulder Press','Cable Lateral Raise','Face Pull']},
-  biceps:     {beginner:['Dumbbell Curl','Cable Curl'], intermediate:['Barbell Curl','Hammer Curl'], advanced:['Barbell Curl','Incline DB Curl','Cable Curl']},
-  triceps:    {beginner:['Cable Pushdown','Overhead DB Extension'], intermediate:['Cable Pushdown','Overhead Tricep Extension'], advanced:['Close-Grip Bench Press','Overhead Tricep Extension','Cable Pushdown']},
-  quads:      {beginner:['Leg Press','Leg Extension'], intermediate:['Hack Squat','Leg Press','Walking Lunge'], advanced:['Hack Squat','Bulgarian Split Squat','Leg Extension','Walking Lunge']},
-  hamstrings: {beginner:['Leg Curl','Glute Kickback Machine'], intermediate:['Romanian Deadlift','Cable Pull-Through','Leg Curl'], advanced:['Romanian Deadlift','Cable Pull-Through','Leg Curl','Bulgarian Split Squat']},
-  calves:     {beginner:['Standing Calf Raise','Seated Calf Raise'], intermediate:['Standing Calf Raise','Seated Calf Raise'], advanced:['Standing Calf Raise','Seated Calf Raise','Single-Leg Calf Raise']},
+  biceps:     {beginner:['Dumbbell Curl','Cable Curl','Bicep Curl Machine'], intermediate:['Barbell Curl','Hammer Curl','Bicep Curl Machine'], advanced:['Barbell Curl','Incline DB Curl','Cable Curl','Bicep Curl Machine']},
+  triceps:    {beginner:['Cable Pushdown','Overhead DB Extension','Tricep Extension Machine'], intermediate:['Cable Pushdown','Overhead Tricep Extension','Tricep Extension Machine'], advanced:['Close-Grip Bench Press','Overhead Tricep Extension','Cable Pushdown','Tricep Extension Machine']},
+  quads:      {beginner:['Leg Press','Leg Extension'], intermediate:['Hack Squat','Leg Press','Walking Lunge','Single-Leg Leg Press'], advanced:['Hack Squat','Bulgarian Split Squat','Leg Extension','Walking Lunge','Single-Leg Leg Press','Single-Leg Leg Extension']},
+  hamstrings: {beginner:['Leg Curl','Glute Kickback Machine','Hip Abduction Machine'], intermediate:['Romanian Deadlift','Cable Pull-Through','Leg Curl','Hip Adduction Machine','Hip Abduction Machine'], advanced:['Romanian Deadlift','Cable Pull-Through','Leg Curl','Bulgarian Split Squat','Hip Adduction Machine','Hip Abduction Machine']},
+  calves:     {beginner:['Standing Calf Raise','Seated Calf Raise','Calf Press (on Leg Press)'], intermediate:['Standing Calf Raise','Seated Calf Raise','Calf Press (on Leg Press)'], advanced:['Standing Calf Raise','Seated Calf Raise','Single-Leg Calf Raise','Calf Press (on Leg Press)']},
   core:       {beginner:['Plank','Cable Crunch'], intermediate:['Weighted Sit-Up','Cable Crunch'], advanced:['Weighted Decline Sit-Up','Cable Crunch','Ab Wheel Rollout']},
 };
 function findExerciseGroup(name){
@@ -3956,6 +3966,12 @@ function renderProgress(){
       </div>
     </div>
     <div class="card">
+      <h3>📅 Monthly Progress Review</h3>
+      <p class="hint">A strictly honest look at the last 30 days — weight trend, training consistency, and nutrition adherence — with concrete suggestions if something needs to change.</p>
+      <div class="btn-row"><button class="secondary small" onclick="aiMonthlyReview()">✨ Get my honest monthly review</button></div>
+      <p class="hint" id="monthly-review-note" style="margin-top:8px;line-height:1.5;"></p>
+    </div>
+    <div class="card">
       <h3>Progress per exercise</h3>
       ${exerciseNames.length ? `
       <select onchange="setProgressExercise(this.value)">
@@ -3997,6 +4013,57 @@ function renderProgress(){
       })()}
     </div>` : ''}
   `;
+}
+function getMonthlyReviewData(personKey){
+  const p = state.people[personKey];
+  const t = calcTargets(personKey);
+  const cutoff = addDaysStr(todayStr(), -30);
+  const weightLogs = sortedLogs(personKey).filter(l=>l.weight && l.date>=cutoff).sort((a,b)=>a.date.localeCompare(b.date));
+  const workoutsInMonth = state.workouts[personKey].filter(w=>w.date>=cutoff && !w.cardio);
+  const uniqueWorkoutDays = new Set(workoutsInMonth.map(w=>w.date)).size;
+  const expectedSessions = Math.round((+p.daysPerWeek||3) * 30/7);
+  const dailyLogsInMonth = state.logs[personKey].filter(l=>l.date>=cutoff);
+  const calorieLogs = dailyLogsInMonth.filter(l=>l.calories!=null);
+  const onTargetDays = t ? calorieLogs.filter(l=>{
+    const pct = l.calories/t.calories*100;
+    return pct>=85 && pct<=115;
+  }).length : 0;
+
+  let weightSummary = null;
+  if(weightLogs.length>=2){
+    const first = weightLogs[0], last = weightLogs[weightLogs.length-1];
+    const days = Math.max(1, (new Date(last.date)-new Date(first.date))/(1000*60*60*24));
+    const totalChange = last.weight - first.weight;
+    const perWeek = totalChange/days*7;
+    const expectedRate = (+p.weight||last.weight) * (PHASES[p.phase] ? PHASES[p.phase].expectedRatePct : 0);
+    weightSummary = {firstWeight:first.weight, lastWeight:last.weight, totalChange, perWeek, expectedRate, days:Math.round(days), logCount:weightLogs.length};
+  }
+
+  return {weightSummary, uniqueWorkoutDays, expectedSessions, dailyLogsCount: dailyLogsInMonth.length, calorieLogsCount: calorieLogs.length, onTargetDays, goalWeight: p.goalWeight};
+}
+async function aiMonthlyReview(){
+  const statusEl = document.getElementById('monthly-review-note');
+  if(!statusEl) return;
+  const p = state.people[currentPerson];
+  const d = getMonthlyReviewData(currentPerson);
+  statusEl.innerHTML = '✨ Reviewing the last 30 days…';
+  const phaseLabel = PHASES[p.phase] ? PHASES[p.phase].label.split(' \u2014 ')[0] : p.phase;
+  const prompt = `You are a strict, brutally honest, evidence-based coach doing a monthly review for ${p.name}, who is on a "${phaseLabel}" phase${p.goalWeight?` working toward a goal weight of ${p.goalWeight}kg`:''}. Do not sugarcoat anything — if something isn't working, say so plainly and directly. If something is genuinely working, say that too, backed by the actual numbers below. Be skeptical of thin data and say so if there isn't enough to draw a real conclusion, rather than manufacturing an opinion either way.
+
+Weight over the last ~30 days: ${d.weightSummary ? `went from ${d.weightSummary.firstWeight}kg to ${d.weightSummary.lastWeight}kg over ${d.weightSummary.days} days (${d.weightSummary.totalChange>0?'+':''}${fmt1(d.weightSummary.totalChange)}kg total, averaging ${d.weightSummary.perWeek>0?'+':''}${fmt1(d.weightSummary.perWeek)}kg/week), based on ${d.weightSummary.logCount} weigh-ins. Expected rate for this phase: ${d.weightSummary.expectedRate>0?'+':''}${fmt1(d.weightSummary.expectedRate)}kg/week.` : `Not enough weigh-in data this month to establish a real trend (fewer than 2 weigh-ins logged in the last 30 days) — call this out as a real gap, since without consistent weigh-ins there's no way to actually know if the plan is working.`}
+
+Training consistency: ${d.uniqueWorkoutDays} distinct days with a logged workout in the last 30 days, against roughly ${d.expectedSessions} expected sessions based on a ${p.daysPerWeek} days/week target.
+
+Nutrition logging: ${d.dailyLogsCount} days logged out of the last 30. Of the ${d.calorieLogsCount} days with calories recorded, ${d.onTargetDays} landed within a reasonable range of target (85-115%).
+
+Give a strictly honest, in-depth monthly review covering: whether the weight trend is genuinely on track for their goal (and if not, by how much and what that practically means), whether training consistency is adequate, whether nutrition logging/adherence is a limiting factor holding progress back, and concrete, specific changes for the next month if something needs to change. If everything is genuinely on track, say so clearly rather than inventing a problem to solve.`;
+  try{
+    const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
+    statusEl.innerHTML = renderBulletPoints(points);
+  }catch(e){
+    console.error(e);
+    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+  }
 }
 function setProgressPerson(key){ currentPerson=key; renderProgress(); }
 function setProgressExercise(name){ progressExercise[currentPerson] = name; renderProgress(); }
