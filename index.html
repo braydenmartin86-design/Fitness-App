@@ -471,7 +471,44 @@ async function callGemini(prompt, opts){
   if(data.error) throw new Error(data.error);
   if(!data.text) throw new Error('Gemini returned an empty response');
   return data.text;
-  return text;
+}
+function isRetryableAIError(message){
+  return /503|UNAVAILABLE|high demand|overloaded|429|RESOURCE_EXHAUSTED/i.test(message||'');
+}
+// Auto-retries when Gemini itself is overloaded (503/high-demand) — not for other errors like
+// missing config or a bad key, where retrying the exact same thing would just fail again.
+async function callGeminiWithRetry(prompt, opts, onRetryStatus){
+  const maxAttempts = 3;
+  let lastError;
+  for(let attempt=1; attempt<=maxAttempts; attempt++){
+    try{
+      return await callGemini(prompt, opts);
+    }catch(e){
+      lastError = e;
+      if(!isRetryableAIError(e.message) || attempt===maxAttempts) throw e;
+      const waitMs = attempt * 2500;
+      if(onRetryStatus) onRetryStatus(`⏳ Gemini is experiencing high demand — retrying in ${Math.round(waitMs/1000)}s… (attempt ${attempt+1}/${maxAttempts})`);
+      await new Promise(r=>setTimeout(r, waitMs));
+    }
+  }
+  throw lastError;
+}
+// Every "commentary" AI feature routes through here now: asks for the same in-depth substance,
+// just returned as a JSON array of points instead of one long paragraph, so it can render as a
+// proper bulleted list. Recipe estimation (aiEstimateRecipe below) is unaffected — its JSON was
+// already structured, this is specifically about switching prose into bullets.
+async function callGeminiBullets(prompt, onRetryStatus){
+  const fullPrompt = prompt + `\n\nReturn ONLY this exact JSON shape, nothing else, no markdown fences: {"points": ["first point \u2014 1-3 sentences, substantive and specific", "second point", "..."]}. Use 4-7 points depending on how much there is to say \u2014 each point should still be genuinely in-depth, just structured as separate points rather than one flowing paragraph. Don't pad with a filler point just to hit a count.`;
+  const raw = await callGeminiWithRetry(fullPrompt, {json:true}, onRetryStatus);
+  const cleaned = raw.replace(/^```json\s*/i,'').replace(/```\s*$/,'').trim();
+  let parsed;
+  try{ parsed = JSON.parse(cleaned); }
+  catch(e){ throw new Error('AI returned an unexpected format'); }
+  if(!parsed.points || !Array.isArray(parsed.points) || !parsed.points.length) throw new Error('AI returned an unexpected format');
+  return parsed.points;
+}
+function renderBulletPoints(points){
+  return points.map(pt=>`<p style="font-size:13px;line-height:1.6;margin-top:8px;">• ${pt}</p>`).join('');
 }
 async function aiEstimateRecipe(rawText){
   const prompt = `You are a nutrition assistant helping fill in a recipe tracker. A user pasted the recipe text below (it might be a full recipe, just an ingredient list, or a rough description). Estimate, per single serving:
@@ -487,7 +524,7 @@ Recipe text:
 """
 ${rawText}
 """`;
-  const raw = await callGemini(prompt, {json:true});
+  const raw = await callGeminiWithRetry(prompt, {json:true});
   const cleaned = raw.replace(/^```json\s*/i,'').replace(/```\s*$/,'').trim();
   return JSON.parse(cleaned);
 }
@@ -1457,16 +1494,16 @@ async function aiExplainAdjustment(){
   const sug = recalibrationSuggestion(currentPerson);
   if(!sug || !statusEl) return;
   const p = state.people[currentPerson];
-  statusEl.textContent = '✨ Thinking…';
+  statusEl.innerHTML = '✨ Thinking…';
   const prompt = `You are an evidence-informed nutrition coach. ${p.name} is on a "${PHASES[p.phase].label.split(' \u2014 ')[0]}" phase. Their actual weight trend has been ${fmt1(sug.actualRate)} kg/week versus an expected ${fmt1(sug.expectedRate)} kg/week for that phase. Based on that gap, their calories are being adjusted by ${sug.adjustment>0?'+':''}${sug.adjustment} kcal/day.
 
-In 6-9 sentences (plain text, no markdown, no bullet points), explain in depth why this adjustment makes sense: walk through the energy-balance math behind it (roughly how many kcal/day map to how much weight change per week, e.g. via the ~7700 kcal-per-kg-of-fat relationship), why adaptive adjustments like this are standard practice in evidence-based coaching rather than a sign something went wrong, and what would make this trend worth adjusting again in future (i.e. another sustained gap between actual and expected rate, not a single off day). Reference real physiological mechanisms (metabolic adaptation, water/glycogen fluctuation masking true fat trend, etc.) where relevant, but don't invent specific study citations or statistics you're not confident about.`;
+Explain in depth why this adjustment makes sense: the energy-balance math behind it (roughly how many kcal/day map to how much weight change per week, e.g. via the ~7700 kcal-per-kg-of-fat relationship), why adaptive adjustments like this are standard practice in evidence-based coaching rather than a sign something went wrong, and what would make this trend worth adjusting again in future. Reference real physiological mechanisms (metabolic adaptation, water/glycogen fluctuation masking true fat trend, etc.) where relevant, but don't invent specific study citations or statistics you're not confident about.`;
   try{
-    const text = await callGemini(prompt);
-    statusEl.textContent = '✨ ' + text.trim();
+    const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
+    statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.textContent = `⚠ Couldn\u2019t reach AI (${e.message}). The adjustment above is calculated directly from your logged trend either way.`;
+    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}). The adjustment above is calculated directly from your logged trend either way.`;
   }
 }
 function setNutritionPerson(key){ currentPerson=key; renderNutrition(); }
@@ -1727,17 +1764,17 @@ async function aiResearchSession(){
   const split = getWeeklySplit(currentPerson);
   const session = split.find(s=>s.id===sessionId);
   if(!session){ statusEl.textContent = 'Pick a session first.'; return; }
-  statusEl.textContent = '🔬 Researching…';
+  statusEl.innerHTML = '🔬 Researching…';
   const exerciseList = session.exercises.map(e => e.group==='cardio' ? `${e.name} (cardio finisher, ${e.reps})` : `${e.name} — ${e.sets}×${e.reps}`).join('; ');
   const prompt = `You are a knowledgeable, evidence-informed strength coach reviewing a client's program. Here is their "${session.label}" session in full: ${exerciseList}.
 
-Give in-depth feedback (7-10 sentences, plain text, no markdown, no headers, no bullet points) on this session as a whole — not on any single exercise in isolation. Cover: whether the exercise selection is well balanced across the muscles/movement patterns this session is meant to target, whether the exercise order makes sense for fatigue management (e.g. compound lifts before isolation, taxing lifts before smaller ones), anything missing or redundant, and one or two concrete changes that would meaningfully improve the session. Ground your reasoning in established resistance training principles (exercise order and fatigue management, movement pattern balance, volume distribution) rather than vague generalities — reference the relevant principle by name where it's genuinely applicable, but don't invent specific studies or statistics you're not confident about. Be specific to what's actually listed in this session, not generic programming advice.`;
+Give in-depth feedback on this session as a whole — not on any single exercise in isolation. Cover: whether the exercise selection is well balanced across the muscles/movement patterns this session is meant to target, whether the exercise order makes sense for fatigue management (e.g. compound lifts before isolation, taxing lifts before smaller ones), anything missing or redundant, and one or two concrete changes that would meaningfully improve the session. Ground your reasoning in established resistance training principles (exercise order and fatigue management, movement pattern balance, volume distribution) rather than vague generalities — reference the relevant principle by name where it's genuinely applicable, but don't invent specific studies or statistics you're not confident about. Be specific to what's actually listed in this session, not generic programming advice.`;
   try{
-    const text = await callGemini(prompt);
-    statusEl.textContent = text.trim();
+    const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
+    statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.textContent = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}).`;
   }
 }
 function toggleSessionCompleted(weekStart, day){
@@ -2081,16 +2118,16 @@ async function aiCreatineTiming(dateStr){
   const {weekStart, label} = dateToWeekAndDay(dateStr);
   const info = ensureWeekSchedule(currentPerson, weekStart)[label];
   const isTraining = !!info.session;
-  statusEl.textContent = '✨ Thinking…';
+  statusEl.innerHTML = '✨ Thinking…';
   const prompt = `You are an evidence-informed sports nutrition coach. ${p.name} takes creatine daily. Today is a ${isTraining?'training':'rest'} day${isTraining && info.trainTime ? `, training at approximately ${info.trainTime}`:''}${info.working?', and it\u2019s also a work shift day for them':''}.
 
-Give an in-depth but honest recommendation (5-7 sentences, plain text, no markdown) for when today specifically makes sense to take their creatine dose. Be accurate to the actual research: total daily consistency is what actually matters for creatine's benefits (muscle saturation builds up over days to weeks regardless of exact timing), and the evidence for timing relative to training is weak/mixed at best — there's a modest theoretical case for taking it with a meal containing carbs/protein (may aid uptake via the insulin response) either before or after training, but don't overstate this as a big lever. Explain the actual reasoning, not just a bare recommendation, so ${p.name} understands why timing matters this little. Suggest a specific practical slot for today given their schedule above.`;
+Give an in-depth but honest recommendation for when today specifically makes sense to take their creatine dose. Be accurate to the actual research: total daily consistency is what actually matters for creatine's benefits (muscle saturation builds up over days to weeks regardless of exact timing), and the evidence for timing relative to training is weak/mixed at best — there's a modest theoretical case for taking it with a meal containing carbs/protein (may aid uptake via the insulin response) either before or after training, but don't overstate this as a big lever. Explain the actual reasoning, not just a bare recommendation, so ${p.name} understands why timing matters this little. Suggest a specific practical slot for today given their schedule above.`;
   try{
-    const text = await callGemini(prompt);
-    statusEl.textContent = text.trim();
+    const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
+    statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.textContent = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}).`;
   }
 }
 function getSlotTargetCalories(personKey, weekStart, day, slot){
@@ -3038,9 +3075,10 @@ function renderLog(){
       ${summary.calPct!=null ? `<p class="mono" style="font-size:17px;margin-top:8px;">${summary.entry.calories} / ${summary.dayTarget} kcal <span class="hint">(${summary.calPct}%)</span></p>` : ''}
       <div style="margin-top:12px;">
         ${summary.aiText ? `
-          <p style="font-size:13px;line-height:1.6;">✨ ${summary.aiText}</p>
+          <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:2px;">✨ Coach's note</p>
+          ${summary.aiText}
         ` : summary.aiLoading ? `
-          <p class="hint">✨ Writing your coaching note…</p>
+          <p class="hint">${summary.aiRetryMsg || '✨ Writing your coaching note…'}</p>
         ` : `
           ${summary.aiError ? `<p class="hint" style="color:var(--danger);margin-bottom:10px;">⚠ AI note failed: ${summary.aiError} — showing the standard breakdown instead.</p>` : ''}
           ${summary.weightNote ? `<p class="hint">${summary.weightNote}</p>` : ''}
@@ -3131,9 +3169,14 @@ Tomorrow: ${summary.tomorrowNotes.join(' ')}
 
 Write one flowing, in-depth coaching passage (8-12 sentences, plain text, no markdown, no headers, no bullet points) that covers: an honest, specific read on how today actually went (not generic praise — name what was good or what to tighten up, and explain WHY it matters physiologically, e.g. what falling short on protein actually does to muscle retention, or why a single high/low day doesn't undo weekly progress), the weight trend in plain terms grounded in real context (water retention, glycogen, digestion affecting day-to-day scale weight vs the true trend), and a heads-up on tomorrow's plan with one concrete, specific action to carry forward. Write it as a single natural message, not a list. Be direct and genuinely useful, not falsely upbeat — reference real nutrition science mechanisms where relevant, but don't invent specific studies or statistics you're not confident about.`;
   try{
-    const text = await callGemini(prompt);
+    const points = await callGeminiBullets(prompt, (msg)=>{
+      if(lastDailySummary[personKey] && lastDailySummary[personKey].date===date){
+        lastDailySummary[personKey].aiRetryMsg = msg;
+        if(currentTab==='log' && currentPerson===personKey) renderLog();
+      }
+    });
     if(lastDailySummary[personKey] && lastDailySummary[personKey].date===date){
-      lastDailySummary[personKey].aiText = text.trim();
+      lastDailySummary[personKey].aiText = renderBulletPoints(points);
       lastDailySummary[personKey].aiLoading = false;
       lastDailySummary[personKey].aiError = null;
       if(currentTab==='log' && currentPerson===personKey) renderLog();
@@ -3260,12 +3303,18 @@ async function fetchAISessionInsight(personKey, date, sessionLabel, feeling, not
   const isPainFlag = feeling==='pain';
   const prompt = `You are a supportive, knowledgeable personal trainer texting a client after their workout. ${p.name} just finished a "${sessionLabel}" session and rated it "${feelingLabel}".${notes ? ` They left this note: "${notes}"` : ' They didn\u2019t leave a note.'}
 
-Write an in-depth reply (5-8 sentences, plain text, no markdown, no headers, no bullet points). ${notes ? `Respond directly and specifically to what they actually wrote. Diagnose the likely cause behind what they described (for example: if they mention low energy or feeling lazy, consider whether it's sleep, under-fuelling, resting too long between sets and losing intensity, or training at a bad time of day for them; if they mention a specific session time of day feeling flat, consider circadian/energy patterns and pre-session nutrition timing), then give concrete, practical tips to prevent it happening again next time — specific enough to act on, not generic "get more sleep" advice unless that's genuinely the most likely cause.` : 'Since there\u2019s no note, just respond to the rating itself with a useful, specific observation.'} Keep it warm and human, not corporate, and skip generic filler like "great job".${isPainFlag ? ' They flagged something hurt or felt off — take this seriously: suggest easing off that specific movement, and if it continues suggest getting it looked at by a physio or doctor rather than pushing through. Do not try to diagnose what it is.' : ''}`;
+Give in-depth feedback. ${notes ? `Respond directly and specifically to what they actually wrote. Diagnose the likely cause behind what they described (for example: if they mention low energy or feeling lazy, consider whether it's sleep, under-fuelling, resting too long between sets and losing intensity, or training at a bad time of day for them; if they mention a specific session time of day feeling flat, consider circadian/energy patterns and pre-session nutrition timing), then give concrete, practical tips to prevent it happening again next time — specific enough to act on, not generic "get more sleep" advice unless that's genuinely the most likely cause.` : 'Since there\u2019s no note, just respond to the rating itself with a useful, specific observation.'} Keep it warm and human, not corporate, and skip generic filler like "great job".${isPainFlag ? ' They flagged something hurt or felt off — take this seriously: suggest easing off that specific movement, and if it continues suggest getting it looked at by a physio or doctor rather than pushing through. Do not try to diagnose what it is.' : ''}`;
   try{
-    const text = await callGemini(prompt);
+    const points = await callGeminiBullets(prompt, (msg)=>{
+      const insight = lastSessionInsight[personKey];
+      if(insight && insight.sessionLabel===sessionLabel && insight.feeling===feeling){
+        insight.aiRetryMsg = msg;
+        if(currentTab==='workouts' && currentPerson===personKey) renderWorkouts();
+      }
+    });
     const insight = lastSessionInsight[personKey];
     if(insight && insight.sessionLabel===sessionLabel && insight.feeling===feeling){
-      insight.text = text.trim();
+      insight.text = renderBulletPoints(points);
       insight.aiLoading = false;
       insight.aiGenerated = true;
       insight.aiError = null;
@@ -3475,17 +3524,17 @@ async function aiExplainNextTargets(){
   const p = state.people[currentPerson];
   const lines = getNextTargetsSummaryText(currentPerson);
   if(!lines.length){ statusEl.textContent = 'Log a few sessions first so there\u2019s something to give tips on.'; return; }
-  statusEl.textContent = '✨ Thinking…';
+  statusEl.innerHTML = '✨ Thinking…';
   const prompt = `You are a supportive, knowledgeable strength coach. Here are ${p.name}'s upcoming targets, calculated from their own logged history:
 ${lines.join('\n')}
 
-In 6-9 sentences (plain text, no markdown, no bullet points), give in-depth, practical coaching on this set of targets as a whole: how to sequence effort across the session (which lifts deserve the most focus/freshness), realistic expectations for progression at this stage, and a concrete cue or two for approaching the top sets specifically. Ground this in real strength-training principles (progressive overload, fatigue management, proximity to failure) rather than vague generalities, but don't invent specific study citations or numbers you're not confident about. Don't just restate the numbers back — give real insight specific to what's actually listed.`;
+Give in-depth, practical coaching on this set of targets as a whole: how to sequence effort across the session (which lifts deserve the most focus/freshness), realistic expectations for progression at this stage, and a concrete cue or two for approaching the top sets specifically. Ground this in real strength-training principles (progressive overload, fatigue management, proximity to failure) rather than vague generalities, but don't invent specific study citations or numbers you're not confident about. Don't just restate the numbers back — give real insight specific to what's actually listed.`;
   try{
-    const text = await callGemini(prompt);
-    statusEl.textContent = '✨ ' + text.trim();
+    const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
+    statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.textContent = `⚠ Couldn\u2019t reach AI (${e.message}). The targets above are calculated directly from your logged history either way.`;
+    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}). The targets above are calculated directly from your logged history either way.`;
   }
 }
 function renderNextTargetsHTML(personKey){
@@ -3633,8 +3682,10 @@ function renderWorkouts(){
         <h3 style="margin:0;">${SESSION_FEELINGS.find(f=>f.id===lastSessionInsight[currentPerson].feeling).icon} ${lastSessionInsight[currentPerson].sessionLabel} — noted</h3>
         <span class="del-x" onclick="dismissSessionInsight()">✕</span>
       </div>
-      <p style="font-size:13px;line-height:1.5;margin-top:8px;">${lastSessionInsight[currentPerson].text}</p>
-      ${lastSessionInsight[currentPerson].aiLoading ? `<p class="hint" style="margin-top:6px;">✨ Getting a more personal note based on what you wrote…</p>` : ''}
+      ${lastSessionInsight[currentPerson].aiGenerated
+        ? lastSessionInsight[currentPerson].text
+        : `<p style="font-size:13px;line-height:1.5;margin-top:8px;">${lastSessionInsight[currentPerson].text}</p>`}
+      ${lastSessionInsight[currentPerson].aiLoading ? `<p class="hint" style="margin-top:6px;">${lastSessionInsight[currentPerson].aiRetryMsg || '✨ Getting a more personal note based on what you wrote…'}</p>` : ''}
       ${lastSessionInsight[currentPerson].aiGenerated ? `<p class="hint" style="margin-top:6px;">✨ Personalised by AI based on your note.</p>` : ''}
       ${lastSessionInsight[currentPerson].aiError ? `<p class="hint" style="margin-top:6px;color:var(--danger);">⚠ AI note failed: ${lastSessionInsight[currentPerson].aiError}</p>` : ''}
       ${lastSessionInsight[currentPerson].notes ? `<p class="hint" style="margin-top:8px;">Your note: "${lastSessionInsight[currentPerson].notes}"</p>` : ''}
