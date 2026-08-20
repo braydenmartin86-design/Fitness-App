@@ -497,8 +497,11 @@ async function callGeminiWithRetry(prompt, opts, onRetryStatus){
 // just returned as a JSON array of points instead of one long paragraph, so it can render as a
 // proper bulleted list. Recipe estimation (aiEstimateRecipe below) is unaffected — its JSON was
 // already structured, this is specifically about switching prose into bullets.
-async function callGeminiBullets(prompt, onRetryStatus){
-  const fullPrompt = prompt + `\n\nReturn ONLY this exact JSON shape, nothing else, no markdown fences, no text before or after it: {"points": ["first point \u2014 1-3 sentences, substantive and specific", "second point", "..."]}. Use 4-7 points depending on how much there is to say \u2014 each point should still be genuinely in-depth, just structured as separate points rather than one flowing paragraph. Don't pad with a filler point just to hit a count.`;
+async function callGeminiBullets(prompt, onRetryStatus, opts){
+  opts = opts || {};
+  const count = opts.count || '3-5';
+  const sentences = opts.sentences || '1-2';
+  const fullPrompt = prompt + `\n\nReturn ONLY this exact JSON shape, nothing else, no markdown fences, no text before or after it: {"points": ["first point \u2014 ${sentences} sentences, clear and specific", "second point", "..."]}. Use ${count} points depending on how much there is to say \u2014 keep each point tight and to the point while still covering the genuinely important information. Don't pad with a filler point just to hit a count, and don't sacrifice the key substance for brevity \u2014 just cut the padding around it.`;
   const raw = await callGeminiWithRetry(fullPrompt, {json:true}, onRetryStatus);
   return parseBulletPoints(raw);
 }
@@ -794,7 +797,7 @@ function getExerciseTip(name){
   if(/curl/.test(n)) return 'No swinging — slow eccentric (lowering) phase, full stretch at the bottom.';
   if(/extension|pushdown|kickback/.test(n)) return 'Keep the working joint isolated, control the negative, avoid using momentum.';
   if(/raise/.test(n)) return 'Lead with the working muscle, not momentum — slow and controlled through the full range.';
-  if(/crunch|sit-up|plank|ab wheel|core/.test(n)) return 'Brace your core hard before moving, control the movement in both directions.';
+  if(/crunch|sit-up|plank|ab wheel|core|twist|leg raise|mountain climber|dead bug|v-up|toes to bar/.test(n)) return 'Brace your core hard before moving, control the movement in both directions.';
   if(/calf/.test(n)) return 'Full stretch at the bottom, brief pause, then drive up and squeeze at the top.';
   if(/walking pad|treadmill|bike|row(ing)?|assault/.test(n)) return 'Keep a steady, sustainable pace — you should be able to hold a conversation at this intensity.';
   return 'Control the lowering (eccentric) phase rather than dropping the weight — it keeps tension on the muscle and protects your joints, even if the exact tempo itself isn\u2019t what drives growth.';
@@ -941,6 +944,39 @@ function isCardioLog(name){
   if(ACTIVITY_TYPES.some(a=>a.label===name)) return true;
   return false;
 }
+// Broader library available for free logging (Log a single exercise / Workout Log picker) —
+// not part of the auto-generated programs, just there so you can log whatever you actually did,
+// covering the kind of variety you'd see across most gym floors / a general tracking app's
+// exercise list. Most fall back cleanly to the pattern-matched tips in getExerciseTip() above;
+// a few distinct enough to need their own cue got one added to EXERCISE_TIPS too.
+const EXTRA_LOGGABLE_EXERCISES = [
+  // Chest
+  'Flat Dumbbell Bench Press','Decline Barbell Bench Press','Decline Dumbbell Press','Cable Crossover','Smith Machine Bench Press','Pec Deck',
+  // Back
+  'Deadlift','Sumo Deadlift','Pull-Up','Chin-Up','Pendlay Row','Chest-Supported Row','Single-Arm Dumbbell Row','Straight-Arm Pulldown','Meadows Row',
+  // Shoulders
+  'Arnold Press','Upright Row','Barbell Shrug','Dumbbell Shrug','Landmine Press','Reverse Pec Deck','Cable Rear Delt Fly',
+  // Arms
+  'Preacher Curl','Concentration Curl','Spider Curl','EZ-Bar Curl','Zottman Curl','Skull Crusher','Rope Pushdown','Tricep Kickback','Diamond Push-Up',
+  // Legs
+  'Front Squat','Goblet Squat','Smith Machine Squat','Step-Up','Sissy Squat','Good Morning','Hip Thrust','Barbell Glute Bridge','Nordic Curl','Single-Leg Romanian Deadlift','Donkey Calf Raise',
+  // Core
+  'Russian Twist','Hanging Leg Raise','Mountain Climbers','Side Plank','Dead Bug','V-Up','Bicycle Crunch','Toes to Bar',
+  // Full body / conditioning
+  'Kettlebell Swing','Farmer\u2019s Carry','Turkish Get-Up','Box Jump','Battle Ropes','Clean and Press',
+];
+const EXTRA_EXERCISE_TIPS = {
+  'Deadlift': 'Brace hard before you break the floor, keep the bar tight against your shins/thighs the whole way up, drive through your heels — this is the one lift where a rounded back genuinely matters, so stop the set if your form breaks down.',
+  'Sumo Deadlift': 'Wide stance, toes turned out, push your knees out in line with your toes as you pull — more quad and less lower-back than a conventional deadlift.',
+  'Pull-Up': 'Full dead hang at the bottom, drive your elbows down and back, avoid kipping/swinging to get the rep.',
+  'Chin-Up': 'Underhand grip brings in more bicep — same full range of motion as a pull-up, dead hang to chin over the bar.',
+  'Hip Thrust': 'Upper back braced on the bench, drive through your heels, squeeze your glutes hard at the top rather than hyperextending your lower back.',
+  'Front Squat': 'Elbows up high to keep the bar on your shoulders, stay upright through the torso, full depth with control.',
+  'Goblet Squat': 'Hold the weight close to your chest, sit down between your knees rather than back, keep your chest tall.',
+  'Farmer\u2019s Carry': 'Brace your core like you\u2019re about to be punched, walk with control — don\u2019t let the weights swing or your shoulders round forward.',
+  'Kettlebell Swing': 'This is a hip hinge, not a squat — power comes from snapping your hips forward, not from your arms lifting the bell.',
+};
+Object.assign(EXERCISE_TIPS, EXTRA_EXERCISE_TIPS);
 function allExerciseNames(personKey){
   const set = new Set();
   state.workouts[personKey].forEach(w=>set.add(w.exercise));
@@ -949,6 +985,7 @@ function allExerciseNames(personKey){
   Object.values(CARDIO_PRESCRIPTIONS).forEach(byPhase=>Object.values(byPhase).forEach(p=>set.add(p.name)));
   CARDIO_LOG_NAMES.forEach(n=>set.add(n));
   ACTIVITY_TYPES.forEach(a=>{ if(a.id!=='other') set.add(a.label); });
+  EXTRA_LOGGABLE_EXERCISES.forEach(n=>set.add(n));
   return [...set].sort();
 }
 
@@ -1527,7 +1564,7 @@ async function aiExplainAdjustment(){
   statusEl.innerHTML = '✨ Thinking…';
   const prompt = `You are an evidence-informed nutrition coach. ${p.name} is on a "${PHASES[p.phase].label.split(' \u2014 ')[0]}" phase. Their actual weight trend has been ${fmt1(sug.actualRate)} kg/week versus an expected ${fmt1(sug.expectedRate)} kg/week for that phase. Based on that gap, their calories are being adjusted by ${sug.adjustment>0?'+':''}${sug.adjustment} kcal/day.
 
-Explain in depth why this adjustment makes sense: the energy-balance math behind it (roughly how many kcal/day map to how much weight change per week, e.g. via the ~7700 kcal-per-kg-of-fat relationship), why adaptive adjustments like this are standard practice in evidence-based coaching rather than a sign something went wrong, and what would make this trend worth adjusting again in future. Reference real physiological mechanisms (metabolic adaptation, water/glycogen fluctuation masking true fat trend, etc.) where relevant, but don't invent specific study citations or statistics you're not confident about.`;
+Explain clearly why this adjustment makes sense — the key reasoning (roughly how kcal/day maps to weekly weight change), and that this is standard, expected practice rather than a sign anything went wrong. Don't invent specific study citations or statistics you're not confident about.`;
   try{
     const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
     statusEl.innerHTML = renderBulletPoints(points);
@@ -1775,6 +1812,15 @@ function renderProgram(){
       <p class="hint" id="program-ai-status" style="margin-top:8px;line-height:1.5;"></p>
     </div>
     <div class="card">
+      <h3>🔄 Suggest exercise swaps for variety</h3>
+      <p class="hint">After you've run the same exercises for a while, checks how long each one's been in rotation and suggests specific swaps worth trying — always chosen from the same verified, muscle-matched exercise list used everywhere else in the app, never invented on the spot. Purely advisory — nothing changes until you apply a swap yourself via the 🔄 button in Workout Log.</p>
+      <select id="program-ai-variety-session">
+        ${split.map(s=>`<option value="${s.id}">${s.label}</option>`).join('')}
+      </select>
+      <div class="btn-row"><button class="secondary small" onclick="aiSuggestVariety()">🔄 Check for stale exercises</button></div>
+      <p class="hint" id="program-ai-variety-status" style="margin-top:8px;line-height:1.5;"></p>
+    </div>
+    <div class="card">
       <h3>📚 Why it's built this way</h3>
       <p class="hint" style="line-height:1.6;">
         <strong style="color:var(--text);">Rep ranges (6–15):</strong> a 2021 review by Schoenfeld et al. found low, moderate and high rep ranges build muscle about equally well, as long as sets are taken close to failure — so the ranges here are chosen for what's practical to execute well, not because one is "better" for growth.<br><br>
@@ -1798,7 +1844,43 @@ async function aiResearchSession(){
   const exerciseList = session.exercises.map(e => e.group==='cardio' ? `${e.name} (cardio finisher, ${e.reps})` : `${e.name} — ${e.sets}×${e.reps}`).join('; ');
   const prompt = `You are a knowledgeable, evidence-informed strength coach reviewing a client's program. Here is their "${session.label}" session in full: ${exerciseList}.
 
-Give in-depth feedback on this session as a whole — not on any single exercise in isolation. Cover: whether the exercise selection is well balanced across the muscles/movement patterns this session is meant to target, whether the exercise order makes sense for fatigue management (e.g. compound lifts before isolation, taxing lifts before smaller ones), anything missing or redundant, and one or two concrete changes that would meaningfully improve the session. Ground your reasoning in established resistance training principles (exercise order and fatigue management, movement pattern balance, volume distribution) rather than vague generalities — reference the relevant principle by name where it's genuinely applicable, but don't invent specific studies or statistics you're not confident about. Be specific to what's actually listed in this session, not generic programming advice.`;
+Give feedback on this session as a whole — not any single exercise in isolation. Cover whether the exercise selection/order is well balanced for the muscles and fatigue management this session targets, anything missing or redundant, and one or two concrete changes that would improve it. Ground this in real resistance-training principles, but don't invent studies or statistics you're not confident about. Be specific to what's actually listed, not generic advice.`;
+  try{
+    const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
+    statusEl.innerHTML = renderBulletPoints(points);
+  }catch(e){
+    console.error(e);
+    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+  }
+}
+async function aiSuggestVariety(){
+  const select = document.getElementById('program-ai-variety-session');
+  const statusEl = document.getElementById('program-ai-variety-status');
+  if(!select || !statusEl) return;
+  const sessionId = select.value;
+  const split = getWeeklySplit(currentPerson);
+  const session = split.find(s=>s.id===sessionId);
+  if(!session){ statusEl.textContent = 'Pick a session first.'; return; }
+  statusEl.innerHTML = '🔄 Checking your history…';
+
+  const lines = [];
+  session.exercises.filter(e=>e.group!=='cardio').forEach(e=>{
+    const history = state.workouts[currentPerson].filter(w=>w.exercise===e.name).sort((a,b)=>a.date.localeCompare(b.date));
+    let durationText = 'never logged yet';
+    if(history.length){
+      const firstDate = new Date(history[0].date+'T00:00:00');
+      const weeksSince = Math.max(0, Math.round((Date.now()-firstDate)/(1000*60*60*24*7)));
+      durationText = `logged for ~${weeksSince} week${weeksSince===1?'':'s'} (${history.length} session${history.length===1?'':'s'})`;
+    }
+    const subs = getExerciseSubstitutes(e.name);
+    lines.push(`${e.name} \u2014 ${durationText}. Valid alternatives for this exact slot: ${subs.length ? subs.join(', ') : 'none available'}.`);
+  });
+  if(!lines.length){ statusEl.textContent = 'Nothing to check for this session.'; return; }
+
+  const prompt = `You are a strength coach reviewing how long ${state.people[currentPerson].name} has been running the same exercises in their "${session.label}" session, to decide if any are worth refreshing for variety and continued progress. Here's each exercise, how long it's been in rotation, and the ONLY valid alternatives for that slot (same muscle group, appropriate for their level):
+${lines.join('\n')}
+
+Recommend which exercises (if any) are genuinely worth swapping now \u2014 generally only ones logged for 4+ weeks are worth touching, exercises with little/no history don't need a swap yet. For each one worth swapping, name the specific alternative to use \u2014 you must pick only from the alternatives list given for that exact exercise, never suggest anything outside that list. Give brief reasoning for each (novel stimulus angle, reducing repetitive strain, keeping motivation fresh, etc). If nothing is genuinely worth swapping yet, say so plainly rather than manufacturing a suggestion.`;
   try{
     const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
     statusEl.innerHTML = renderBulletPoints(points);
@@ -2151,7 +2233,7 @@ async function aiCreatineTiming(dateStr){
   statusEl.innerHTML = '✨ Thinking…';
   const prompt = `You are an evidence-informed sports nutrition coach. ${p.name} takes creatine daily. Today is a ${isTraining?'training':'rest'} day${isTraining && info.trainTime ? `, training at approximately ${info.trainTime}`:''}${info.working?', and it\u2019s also a work shift day for them':''}.
 
-Give an in-depth but honest recommendation for when today specifically makes sense to take their creatine dose. Be accurate to the actual research: total daily consistency is what actually matters for creatine's benefits (muscle saturation builds up over days to weeks regardless of exact timing), and the evidence for timing relative to training is weak/mixed at best — there's a modest theoretical case for taking it with a meal containing carbs/protein (may aid uptake via the insulin response) either before or after training, but don't overstate this as a big lever. Explain the actual reasoning, not just a bare recommendation, so ${p.name} understands why timing matters this little. Suggest a specific practical slot for today given their schedule above.`;
+Give an honest recommendation for when today makes sense to take their creatine dose. Be accurate to the research: total daily consistency is what actually matters (muscle saturation builds over days/weeks regardless of exact timing), and timing relative to training has weak evidence at best — don't overstate it as a big lever. Give brief reasoning, not just a bare recommendation, and suggest a specific practical slot for today.`;
   try{
     const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
     statusEl.innerHTML = renderBulletPoints(points);
@@ -3197,14 +3279,14 @@ Today's actuals: ${e.calories!=null?`${e.calories} kcal (${summary.calPct}% of t
 ${summary.weightNote ? `Weight trend context: ${summary.weightNote}` : ''}
 Tomorrow: ${summary.tomorrowNotes.join(' ')}
 
-Write one flowing, in-depth coaching passage (8-12 sentences, plain text, no markdown, no headers, no bullet points) that covers: an honest, specific read on how today actually went (not generic praise — name what was good or what to tighten up, and explain WHY it matters physiologically, e.g. what falling short on protein actually does to muscle retention, or why a single high/low day doesn't undo weekly progress), the weight trend in plain terms grounded in real context (water retention, glycogen, digestion affecting day-to-day scale weight vs the true trend), and a heads-up on tomorrow's plan with one concrete, specific action to carry forward. Write it as a single natural message, not a list. Be direct and genuinely useful, not falsely upbeat — reference real nutrition science mechanisms where relevant, but don't invent specific studies or statistics you're not confident about.`;
+Give in-depth coaching that covers: an honest, specific read on how today actually went (not generic praise — name what was good or what to tighten up, and explain WHY it matters physiologically, e.g. what falling short on protein actually does to muscle retention, or why a single high/low day doesn't undo weekly progress), the weight trend in plain terms grounded in real context (water retention, glycogen, digestion affecting day-to-day scale weight vs the true trend), and a heads-up on tomorrow's plan with one concrete, specific action to carry forward. Be direct and genuinely useful, not falsely upbeat — reference real nutrition science mechanisms where relevant, but don't invent specific studies or statistics you're not confident about.`;
   try{
     const points = await callGeminiBullets(prompt, (msg)=>{
       if(lastDailySummary[personKey] && lastDailySummary[personKey].date===date){
         lastDailySummary[personKey].aiRetryMsg = msg;
         if(currentTab==='log' && currentPerson===personKey) renderLog();
       }
-    });
+    }, {count:'4-7', sentences:'1-3'});
     if(lastDailySummary[personKey] && lastDailySummary[personKey].date===date){
       lastDailySummary[personKey].aiText = renderBulletPoints(points);
       lastDailySummary[personKey].aiLoading = false;
@@ -3333,7 +3415,7 @@ async function fetchAISessionInsight(personKey, date, sessionLabel, feeling, not
   const isPainFlag = feeling==='pain';
   const prompt = `You are a supportive, knowledgeable personal trainer texting a client after their workout. ${p.name} just finished a "${sessionLabel}" session and rated it "${feelingLabel}".${notes ? ` They left this note: "${notes}"` : ' They didn\u2019t leave a note.'}
 
-Give in-depth feedback. ${notes ? `Respond directly and specifically to what they actually wrote. Diagnose the likely cause behind what they described (for example: if they mention low energy or feeling lazy, consider whether it's sleep, under-fuelling, resting too long between sets and losing intensity, or training at a bad time of day for them; if they mention a specific session time of day feeling flat, consider circadian/energy patterns and pre-session nutrition timing), then give concrete, practical tips to prevent it happening again next time — specific enough to act on, not generic "get more sleep" advice unless that's genuinely the most likely cause.` : 'Since there\u2019s no note, just respond to the rating itself with a useful, specific observation.'} Keep it warm and human, not corporate, and skip generic filler like "great job".${isPainFlag ? ' They flagged something hurt or felt off — take this seriously: suggest easing off that specific movement, and if it continues suggest getting it looked at by a physio or doctor rather than pushing through. Do not try to diagnose what it is.' : ''}`;
+${notes ? `Respond directly and specifically to what they actually wrote. Diagnose the likely cause behind what they described (sleep, under-fuelling, resting too long between sets, a bad time of day for them, etc.), then give a concrete, practical tip to prevent it next time — specific enough to act on, not generic "get more sleep" advice unless that's genuinely the most likely cause.` : 'Since there\u2019s no note, just respond to the rating itself with a useful, specific observation.'} Keep it warm and human, not corporate, and skip generic filler like "great job".${isPainFlag ? ' They flagged something hurt or felt off — take this seriously: suggest easing off that specific movement, and if it continues suggest getting it looked at by a physio or doctor rather than pushing through. Do not try to diagnose what it is.' : ''}`;
   try{
     const points = await callGeminiBullets(prompt, (msg)=>{
       const insight = lastSessionInsight[personKey];
@@ -3556,7 +3638,7 @@ async function aiExplainNextTargets(){
   const prompt = `You are a supportive, knowledgeable strength coach. Here are ${p.name}'s upcoming targets, calculated from their own logged history:
 ${lines.join('\n')}
 
-Give in-depth, practical coaching on this set of targets as a whole: how to sequence effort across the session (which lifts deserve the most focus/freshness), realistic expectations for progression at this stage, and a concrete cue or two for approaching the top sets specifically. Ground this in real strength-training principles (progressive overload, fatigue management, proximity to failure) rather than vague generalities, but don't invent specific study citations or numbers you're not confident about. Don't just restate the numbers back — give real insight specific to what's actually listed.`;
+Give practical coaching on this set of targets as a whole: how to sequence effort across the session, realistic expectations for progression at this stage, and a concrete cue for the top sets. Ground this in real strength-training principles, but don't invent citations or numbers you're not confident about. Don't just restate the numbers back.`;
   try{
     const points = await callGeminiBullets(prompt, (msg)=>{ statusEl.innerHTML = msg; });
     statusEl.innerHTML = renderBulletPoints(points);
