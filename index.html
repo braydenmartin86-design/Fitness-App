@@ -245,6 +245,7 @@
       <span onclick="refreshFromShared()" style="cursor:pointer;font-size:15px;color:var(--muted);" title="Refresh — pull in the latest from your partner's device">🔄</span>
     </div>
   </div>
+  <div id="ai-quota-banner"></div>
   <div id="main"></div>
   <div id="bottomnav"></div>
   <div id="more-sheet-root"></div>
@@ -303,6 +304,7 @@ function defaultData(){
     oneRepMax:{p1:{}, p2:{}},
     mealTracking:{p1:{}, p2:{}},
     sessionFeedback:{p1:[], p2:[]},
+    aiQuotaExhaustedUntil: null, // shared, project-level Gemini quota — set/cleared automatically
     shoppingChecked:{p1:{}, p2:{}},
   };
 }
@@ -438,6 +440,16 @@ function updateSyncIndicator(){
     lastSyncedAt ? `Synced ${lastSyncedAt.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}` : '';
   el.textContent = label;
 }
+function updateAIQuotaBanner(){
+  const el = document.getElementById('ai-quota-banner');
+  if(!el) return;
+  const until = state.aiQuotaExhaustedUntil;
+  if(until && new Date(until) > new Date()){
+    el.innerHTML = `<div style="background:var(--surface-alt);border-left:3px solid var(--warn);padding:8px 16px;font-size:12px;color:var(--muted);">⚠ AI quota used up for today (shared between you both) — back around ${formatResetTime(until)}.</div>`;
+  } else {
+    el.innerHTML = '';
+  }
+}
 function uid(){ return Math.random().toString(36).slice(2,10); }
 
 // --- Gemini AI, routed through a Supabase Edge Function (supabase/functions/gemini-proxy) ---
@@ -479,10 +491,29 @@ function isRetryableAIError(message){
   if(/quota|billing/i.test(msg)) return false;
   return /503|UNAVAILABLE|high demand|overloaded|429|RESOURCE_EXHAUSTED/i.test(msg);
 }
+// Gemini free-tier daily quota always resets at midnight Pacific Time (Google's own docs,
+// no exceptions) — this works out when that next reset actually is in the browser's own
+// local time, correctly handling US/local daylight saving via Intl rather than a hardcoded offset.
+function nextPacificMidnight(){
+  const now = new Date();
+  const offsetPart = new Intl.DateTimeFormat('en-US', {timeZone:'America/Los_Angeles', timeZoneName:'shortOffset'}).formatToParts(now).find(p=>p.type==='timeZoneName').value;
+  const offsetHours = parseInt(offsetPart.replace('GMT',''), 10) || -8; // e.g. "GMT-7" -> -7
+  const laDateStr = new Intl.DateTimeFormat('en-CA', {timeZone:'America/Los_Angeles', year:'numeric', month:'2-digit', day:'2-digit'}).format(now);
+  const todayMidnightLA_UTC = new Date(`${laDateStr}T00:00:00Z`);
+  let resetUTC = new Date(todayMidnightLA_UTC.getTime() - offsetHours*60*60*1000);
+  if(resetUTC.getTime() <= now.getTime()) resetUTC = new Date(resetUTC.getTime() + 24*60*60*1000);
+  return resetUTC;
+}
+function formatResetTime(isoString){
+  const d = isoString ? new Date(isoString) : nextPacificMidnight();
+  const now = new Date();
+  const sameDay = d.toDateString()===now.toDateString();
+  return d.toLocaleString(undefined, sameDay ? {hour:'numeric', minute:'2-digit'} : {weekday:'short', hour:'numeric', minute:'2-digit'});
+}
 function friendlyAIError(message){
   const msg = message||'';
   if(/quota|billing/i.test(msg)){
-    return 'Your Gemini API quota is used up for now. Free-tier quotas usually reset daily \u2014 check your plan/usage at ai.google.dev, or add billing for higher limits.';
+    return `Your Gemini quota is used up for today \u2014 resets ${formatResetTime()} your time (that's midnight Pacific, always). Nothing to do but wait, retrying won\u2019t help before then.`;
   }
   if(/503|UNAVAILABLE|high demand|overloaded/i.test(msg)){
     return 'Gemini is overloaded right now and retrying didn\u2019t get through. Worth trying again in a minute or two.';
@@ -496,9 +527,17 @@ async function callGeminiWithRetry(prompt, opts, onRetryStatus){
   let lastError;
   for(let attempt=1; attempt<=maxAttempts; attempt++){
     try{
-      return await callGemini(prompt, opts);
+      const result = await callGemini(prompt, opts);
+      if(state.aiQuotaExhaustedUntil){ state.aiQuotaExhaustedUntil = null; save(); } // a call succeeded — clear any stale banner
+      return result;
     }catch(e){
       lastError = e;
+      if(/quota|billing/i.test(e.message||'')){
+        // Shared across both of you — this is a project-level quota, not per-person, so whoever
+        // hits it first flags it for both (synced via Supabase like everything else).
+        state.aiQuotaExhaustedUntil = nextPacificMidnight().toISOString();
+        save();
+      }
       if(!isRetryableAIError(e.message) || attempt===maxAttempts) throw e;
       const waitMs = attempt * 2500;
       if(onRetryStatus) onRetryStatus(`⏳ Gemini is experiencing high demand — retrying in ${Math.round(waitMs/1000)}s… (attempt ${attempt+1}/${maxAttempts})`);
@@ -4171,6 +4210,7 @@ function setProgressCardio(name){ progressCardio[currentPerson] = name; renderPr
 function render(){
   renderBottomNav();
   updateSyncIndicator();
+  updateAIQuotaBanner();
   if(currentTab==='dashboard') renderDashboard();
   else if(currentTab==='nutrition') renderNutrition();
   else if(currentTab==='program') renderProgram();
