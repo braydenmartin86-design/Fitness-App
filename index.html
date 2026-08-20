@@ -465,7 +465,10 @@ function hasGemini(){
 async function callGemini(prompt, opts){
   opts = opts || {};
   if(!hasSharedStorage()) throw new Error('Supabase isn\u2019t configured, so the AI proxy function can\u2019t be reached');
-  const url = `${window.SUPABASE_URL}/functions/v1/gemini-proxy`;
+  // Deliberately its own dedicated function (not the shared "gemini-proxy" some other app
+  // might use) — that way redeploying or changing anything about TANDEM's AI setup can never
+  // affect another app, and vice versa. Each has its own function name and its own key/quota.
+  const url = `${window.SUPABASE_URL}/functions/v1/tandem-gemini-proxy`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
