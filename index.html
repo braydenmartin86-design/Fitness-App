@@ -473,7 +473,21 @@ async function callGemini(prompt, opts){
   return data.text;
 }
 function isRetryableAIError(message){
-  return /503|UNAVAILABLE|high demand|overloaded|429|RESOURCE_EXHAUSTED/i.test(message||'');
+  const msg = message||'';
+  // A 429 specifically about quota/billing being used up won't fix itself by waiting a few
+  // seconds — only retry genuinely transient conditions (server overload, short rate limits).
+  if(/quota|billing/i.test(msg)) return false;
+  return /503|UNAVAILABLE|high demand|overloaded|429|RESOURCE_EXHAUSTED/i.test(msg);
+}
+function friendlyAIError(message){
+  const msg = message||'';
+  if(/quota|billing/i.test(msg)){
+    return 'Your Gemini API quota is used up for now. Free-tier quotas usually reset daily \u2014 check your plan/usage at ai.google.dev, or add billing for higher limits.';
+  }
+  if(/503|UNAVAILABLE|high demand|overloaded/i.test(msg)){
+    return 'Gemini is overloaded right now and retrying didn\u2019t get through. Worth trying again in a minute or two.';
+  }
+  return msg; // anything else — the raw message is still the most useful thing to show
 }
 // Auto-retries when Gemini itself is overloaded (503/high-demand) — not for other errors like
 // missing config or a bad key, where retrying the exact same thing would just fail again.
@@ -1570,7 +1584,7 @@ Explain clearly why this adjustment makes sense — the key reasoning (roughly h
     statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}). The adjustment above is calculated directly from your logged trend either way.`;
+    statusEl.innerHTML = `⚠ ${friendlyAIError(e.message)} The adjustment above is calculated directly from your logged trend either way.`;
   }
 }
 function setNutritionPerson(key){ currentPerson=key; renderNutrition(); }
@@ -1850,7 +1864,7 @@ Give feedback on this session as a whole — not any single exercise in isolatio
     statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+    statusEl.innerHTML = `⚠ ${friendlyAIError(e.message)}`;
   }
 }
 async function aiSuggestVariety(){
@@ -1886,7 +1900,7 @@ Recommend which exercises (if any) are genuinely worth swapping now \u2014 gener
     statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+    statusEl.innerHTML = `⚠ ${friendlyAIError(e.message)}`;
   }
 }
 function toggleSessionCompleted(weekStart, day){
@@ -2239,7 +2253,7 @@ Give an honest recommendation for when today makes sense to take their creatine 
     statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+    statusEl.innerHTML = `⚠ ${friendlyAIError(e.message)}`;
   }
 }
 function getSlotTargetCalories(personKey, weekStart, day, slot){
@@ -3295,7 +3309,7 @@ Give in-depth coaching that covers: an honest, specific read on how today actual
     }
   }catch(e){
     console.error('AI daily insight failed, falling back to the standard tips:', e);
-    if(lastDailySummary[personKey]){ lastDailySummary[personKey].aiLoading = false; lastDailySummary[personKey].aiError = e.message; }
+    if(lastDailySummary[personKey]){ lastDailySummary[personKey].aiLoading = false; lastDailySummary[personKey].aiError = friendlyAIError(e.message); }
     if(currentTab==='log' && currentPerson===personKey) renderLog();
   }
 }
@@ -3435,7 +3449,7 @@ ${notes ? `Respond directly and specifically to what they actually wrote. Diagno
   }catch(e){
     console.error('AI session insight failed, keeping the standard note:', e);
     const insight = lastSessionInsight[personKey];
-    if(insight){ insight.aiLoading = false; insight.aiError = e.message; }
+    if(insight){ insight.aiLoading = false; insight.aiError = friendlyAIError(e.message); }
     if(currentTab==='workouts' && currentPerson===personKey) renderWorkouts();
   }
 }
@@ -3644,7 +3658,7 @@ Give practical coaching on this set of targets as a whole: how to sequence effor
     statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}). The targets above are calculated directly from your logged history either way.`;
+    statusEl.innerHTML = `⚠ ${friendlyAIError(e.message)} The targets above are calculated directly from your logged history either way.`;
   }
 }
 function renderNextTargetsHTML(personKey){
@@ -4144,7 +4158,7 @@ Give a strictly honest, in-depth monthly review covering: whether the weight tre
     statusEl.innerHTML = renderBulletPoints(points);
   }catch(e){
     console.error(e);
-    statusEl.innerHTML = `⚠ Couldn\u2019t reach AI (${e.message}).`;
+    statusEl.innerHTML = `⚠ ${friendlyAIError(e.message)}`;
   }
 }
 function setProgressPerson(key){ currentPerson=key; renderProgress(); }
