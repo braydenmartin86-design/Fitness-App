@@ -304,6 +304,7 @@ function defaultData(){
     oneRepMax:{p1:{}, p2:{}},
     mealTracking:{p1:{}, p2:{}},
     sessionFeedback:{p1:[], p2:[]},
+    sessionLog:{p1:[], p2:[]}, // {id, date, sessionId, sessionLabel} for EVERY saved session — reliable regardless of whether feedback was given
     aiQuotaExhaustedUntil: null, // shared, project-level Gemini quota — set/cleared automatically
     shoppingChecked:{p1:{}, p2:{}},
   };
@@ -338,6 +339,7 @@ function mergeWithDefaults(parsed){
     oneRepMax:{...d.oneRepMax, ...(parsed.oneRepMax||{})},
     mealTracking:{...d.mealTracking, ...(parsed.mealTracking||{})},
     sessionFeedback:{...d.sessionFeedback, ...(parsed.sessionFeedback||{})},
+    sessionLog:{...d.sessionLog, ...(parsed.sessionLog||{})},
     shoppingChecked:{...d.shoppingChecked, ...(parsed.shoppingChecked||{})}};
 }
 function migrateDefaultNames(){
@@ -3533,6 +3535,16 @@ function getSessionOptionsForPerson(personKey, forDate){
   return options;
 }
 function getDisplayExerciseName(originalName){ return sessionExerciseSwaps[originalName] || originalName; }
+function getPreviousSessionSnapshot(personKey, sessionId, beforeDate){
+  const logs = (state.sessionLog[personKey]||[])
+    .filter(l=>l.sessionId===sessionId && (!beforeDate || l.date<beforeDate))
+    .sort((a,b)=>b.date.localeCompare(a.date));
+  if(!logs.length) return null;
+  const mostRecent = logs[0];
+  const exerciseEntries = state.workouts[personKey].filter(w=>w.date===mostRecent.date);
+  if(!exerciseEntries.length) return null;
+  return {date: mostRecent.date, sessionLabel: mostRecent.sessionLabel, exercises: exerciseEntries};
+}
 function pickLogSession(sessionId){
   sessionLogSelection = sessionId || null;
   sessionLogSets = {};
@@ -3544,8 +3556,17 @@ function pickLogSession(sessionId){
       if(session.isActivity){
         sessionLogSets[session.activityName] = [{duration: session.defaultDuration, distance:''}];
       } else {
+        const previous = getPreviousSessionSnapshot(currentPerson, sessionId, sessionLogDate[currentPerson]);
         session.exercises.filter(e=>e.group!=='cardio').forEach(e=>{
-          const suggestion = estimateWorkingWeight(currentPerson, e.name, e.reps);
+          // Default to whatever was actually used last time for this slot (including a
+          // substitute, if one was used) — still fully changeable via the 🔄 swap button.
+          if(previous){
+            const candidates = [e.name, ...getExerciseSubstitutes(e.name)];
+            const lastUsed = previous.exercises.find(pe=>candidates.includes(pe.exercise));
+            if(lastUsed && lastUsed.exercise !== e.name) sessionExerciseSwaps[e.name] = lastUsed.exercise;
+          }
+          const displayName = getDisplayExerciseName(e.name);
+          const suggestion = estimateWorkingWeight(currentPerson, displayName, e.reps);
           const repsAvg = parseRepsAvg(e.reps);
           const repTarget = repsAvg!==null ? Math.round(repsAvg) : '';
           sessionLogSets[e.name] = Array.from({length: e.sets}, ()=>({weight: suggestion ? suggestion.weight : '', reps: repTarget}));
@@ -3623,6 +3644,9 @@ function saveFullSession(){
     loggedAny = true;
   });
   if(!loggedAny){ alert('Add at least one value to log.'); return; }
+  // Record this session's date+type reliably, regardless of whether feedback was given —
+  // this is what lets "previous session" lookups work every time, not just when a rating was left.
+  state.sessionLog[currentPerson].push({id:uid(), date, sessionId: session.id, sessionLabel: session.label});
   const feeling = sessionFeeling[currentPerson];
   const notes = sessionNotesText[currentPerson];
   const feedbackPersonKey = currentPerson;
@@ -3767,6 +3791,16 @@ function renderWorkouts(){
   const scheduledId = getScheduledSessionIdForDate(currentPerson, sessionLogDate[currentPerson]);
   const scheduledOption = scheduledId ? sessionOptions.find(s=>s.id===scheduledId) : null;
   const chosenSession = sessionLogSelection ? sessionOptions.find(s=>s.id===sessionLogSelection) : null;
+  const previousSnapshot = (chosenSession && !chosenSession.isActivity) ? getPreviousSessionSnapshot(currentPerson, sessionLogSelection, sessionLogDate[currentPerson]) : null;
+  const previousSnapshotHTML = previousSnapshot ? `
+    <div style="margin-top:12px;padding:12px 14px;background:var(--surface-alt);border-radius:14px;">
+      <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px;">📋 Last ${previousSnapshot.sessionLabel} — ${fmtDate(previousSnapshot.date)}</p>
+      ${previousSnapshot.exercises.map(pe=>{
+        if(pe.cardio) return `<p style="font-size:13px;margin:3px 0;">${pe.exercise}: ${pe.distance?`${pe.distance}km `:''}${pe.duration?`${pe.duration} min`:''}</p>`;
+        const setsStr = pe.sets.map(s=>`${s.weight}kg×${s.reps}`).join(', ');
+        return `<p style="font-size:13px;margin:3px 0;">${pe.exercise}: ${setsStr}</p>`;
+      }).join('')}
+    </div>` : '';
 
   const fullSessionExercisesHTML = chosenSession ? (chosenSession.isActivity ? [{name: chosenSession.activityName}] : chosenSession.exercises.filter(e=>e.group!=='cardio')).map(e=>{
     const sets = sessionLogSets[e.name] || [];
@@ -3820,6 +3854,7 @@ function renderWorkouts(){
         </div>
       </div>
       ${scheduledOption ? `<p class="hint" style="margin-top:6px;">📅 Program has <strong style="color:var(--text);">${scheduledOption.label}</strong> planned for this day${scheduledOption.id===sessionLogSelection?' — already loaded below':''}.</p>` : `<p class="hint" style="margin-top:6px;">Nothing scheduled in Program for this day — pick any session to log anyway.</p>`}
+      ${previousSnapshotHTML}
       ${chosenSession ? `
       <div style="margin-top:14px;">${fullSessionExercisesHTML}</div>
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
