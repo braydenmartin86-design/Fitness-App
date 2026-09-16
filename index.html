@@ -3836,8 +3836,10 @@ function renderWorkouts(){
       <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px;">📋 Last ${previousSnapshot.sessionLabel} — ${fmtDate(previousSnapshot.date)}</p>
       ${previousSnapshot.exercises.map(pe=>{
         if(pe.cardio) return `<p style="font-size:13px;margin:3px 0;">${pe.exercise}: ${pe.distance?`${pe.distance}km `:''}${pe.duration?`${pe.duration} min`:''}</p>`;
-        const setsStr = pe.sets.map(s=>`${s.weight}kg×${s.reps}`).join(', ');
-        return `<p style="font-size:13px;margin:3px 0;">${pe.exercise}: ${setsStr}</p>`;
+        // Best set = highest estimated 1RM (same definition the app uses everywhere else for PRs),
+        // not just the heaviest number on the page — one line per exercise, not every set.
+        const best = pe.sets.reduce((a,b)=> e1RM(b.weight,b.reps) > e1RM(a.weight,a.reps) ? b : a);
+        return `<p style="font-size:13px;margin:3px 0;">${pe.exercise}: ${best.weight}kg×${best.reps}${pe.sets.length>1?` <span class="hint">(best of ${pe.sets.length})</span>`:''}</p>`;
       }).join('')}
     </div>` : '';
 
