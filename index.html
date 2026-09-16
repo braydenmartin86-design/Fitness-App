@@ -346,6 +346,45 @@ function migrateDefaultNames(){
   if(state.people.p1 && state.people.p1.name==='Person 1') state.people.p1.name='Brayden';
   if(state.people.p2 && state.people.p2.name==='Person 2') state.people.p2.name='Jemma';
 }
+// One-time backfill: "sessionLog" (which session type was logged on which date) is a new
+// tracking field — it has no way to know about workouts logged before it existed. This
+// reconstructs it from what we DO already have, so "previous session" works immediately on
+// existing history instead of only starting to work after the next two times you log something.
+function migrateSessionLogIfNeeded(personKey){
+  if(!state.workouts[personKey] || !state.workouts[personKey].length) return;
+  if((state.sessionLog[personKey]||[]).length > 0) return; // already has real data — never overwrite it
+  const workoutDates = [...new Set(state.workouts[personKey].filter(w=>!w.cardio).map(w=>w.date))];
+  if(!workoutDates.length) return;
+  const split = getWeeklySplit(personKey);
+  if(!split.length) return;
+  const feedbackByDate = {};
+  (state.sessionFeedback[personKey]||[]).forEach(f=>{ feedbackByDate[f.date] = f.sessionLabel; });
+
+  const reconstructed = [];
+  workoutDates.forEach(date=>{
+    const exercisesThatDay = state.workouts[personKey].filter(w=>w.date===date && !w.cardio).map(w=>w.exercise);
+    if(!exercisesThatDay.length) return;
+    // 1) High confidence: you left a rating/note that day — it already recorded the session label directly
+    if(feedbackByDate[date]){
+      const matched = split.find(s=>s.label===feedbackByDate[date]);
+      if(matched){ reconstructed.push({id:uid(), date, sessionId:matched.id, sessionLabel:matched.label}); return; }
+    }
+    // 2) Fallback: best-guess by how many of that day's exercises belong to each session
+    // (including any valid substitute) — needs at least 2 matches to count as confident.
+    let bestMatch = null, bestScore = 0;
+    split.forEach(s=>{
+      const poolNames = new Set();
+      s.exercises.filter(e=>e.group!=='cardio').forEach(e=>{ poolNames.add(e.name); getExerciseSubstitutes(e.name).forEach(sub=>poolNames.add(sub)); });
+      const overlap = exercisesThatDay.filter(name=>poolNames.has(name)).length;
+      if(overlap > bestScore){ bestScore = overlap; bestMatch = s; }
+    });
+    if(bestMatch && bestScore >= 2) reconstructed.push({id:uid(), date, sessionId:bestMatch.id, sessionLabel:bestMatch.label});
+  });
+
+  if(reconstructed.length){
+    state.sessionLog[personKey] = reconstructed.sort((a,b)=>a.date.localeCompare(b.date));
+  }
+}
 
 // --- Storage backend: Supabase (cloud, cross-device) when configured, otherwise
 // falls back to this browser's localStorage so the app still works before setup. ---
@@ -4263,6 +4302,10 @@ async function initApp(){
   document.getElementById('main').innerHTML = `<div class="empty-state" style="margin-top:60px;">Loading${hasSharedStorage()?' — syncing with your partner\u2019s data…':'…'}</div>`;
   state = await loadStateAsync();
   migrateDefaultNames();
+  const beforeP1 = (state.sessionLog.p1||[]).length, beforeP2 = (state.sessionLog.p2||[]).length;
+  migrateSessionLogIfNeeded('p1');
+  migrateSessionLogIfNeeded('p2');
+  if((state.sessionLog.p1||[]).length !== beforeP1 || (state.sessionLog.p2||[]).length !== beforeP2) save(); // persist the backfill so it only ever runs once
   editMode = {p1: !state.people.p1.age, p2: !state.people.p2.age};
   lastSyncedAt = new Date();
   syncStatus = hasSharedStorage() ? 'saved' : 'local';
