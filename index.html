@@ -1387,7 +1387,6 @@ const PRIMARY_TABS = [
 const MORE_TABS = [
   {tab:'log', icon:'✎', label:'Daily Log'},
   {tab:'bodycomp', icon:'◐', label:'Body Comp'},
-  {tab:'workouts', icon:'▲', label:'Workout Log'},
   {tab:'progress', icon:'↗', label:'Progress'},
   {tab:'setup', icon:'⚙', label:'Setup'},
 ];
@@ -1475,9 +1474,11 @@ function renderDashboard(){
     const ringHTML = targets
       ? ringSVG(loggedCal!=null?Math.round(loggedCal/targets.calories*100):0, ringColor, 88, 9, loggedCal!=null?loggedCal:targets.calories, loggedCal!=null?'kcal logged':'kcal target')
       : ringSVG(0, 'var(--border)', 88, 9, '—', 'no data');
+    const weekC = getWeekCompletion(key, getMondayOfWeek(new Date()));
     return `
       <div class="sync-half ${accentClass}" onclick="toggleDashboardExpand('${key}')">
         <div class="sync-name"><span class="dot"></span>${p.name} <span class="badge phase-${p.phase}" style="margin-left:6px;">${PHASES[p.phase].label.split(' — ')[0]}</span></div>
+        ${weekC.trackedCount>0 ? `<p class="hint" style="margin:2px 0 0 0;">${weekC.doneCount}/${weekC.trackedCount} workouts this week${weekC.complete?' 🎉':''}</p>` : ''}
         <div class="sync-body">
           ${ringHTML}
           <div class="sync-metrics">
@@ -1826,9 +1827,6 @@ function renderWeekBlockHTML(weekStart, weekBadgeLabel){
       title = '🏠 Home Workout';
       sub = `${exercises.length} moves${info.trainTime?` · ~${info.trainTime}`:''}`;
     }
-    const expandKey = weekStart+'|'+day;
-    const isExpanded = expandedProgramDay===expandKey;
-
     let bodyHTML;
     if(exercises){
       bodyHTML = `
@@ -1857,8 +1855,7 @@ function renderWeekBlockHTML(weekStart, weekBadgeLabel){
           <div class="cal-day-body">${bodyHTML}</div>
           ${activityRowHTML}
         </div>
-      </div>
-      ${isExpanded && exercises ? `<div class="cal-expanded">${planTable(exercises, currentPerson)}</div>` : ''}`;
+      </div>`;
   }).join('');
 
   return `
@@ -1875,6 +1872,8 @@ function renderWeekBlockHTML(weekStart, weekBadgeLabel){
     <div class="btn-row"><button class="secondary small" onclick="regenerateWeekSchedule('${currentPerson}','${weekStart}')">🔄 Auto-fill week</button></div>
   `;
 }
+let programLibraryFilter = {p1:null, p2:null};
+function setProgramLibraryFilter(val){ programLibraryFilter[currentPerson] = val; renderProgram(); }
 function renderProgram(){
   const p = state.people[currentPerson];
   const weekStart = getMondayOfWeek(new Date());
@@ -1883,10 +1882,15 @@ function renderProgram(){
   daySettingsSheetOpen = null; // any open sheet is stale once we do a full re-render
   const weekStreak = computeWeekStreak(currentPerson);
   const week2Expanded = programWeek2Expanded[currentPerson];
+  if(!programLibraryFilter[currentPerson] || !split.some(s=>s.id===programLibraryFilter[currentPerson])) programLibraryFilter[currentPerson] = split[0] ? split[0].id : null;
+  const libSession = split.find(s=>s.id===programLibraryFilter[currentPerson]);
+
+  const logSessionCardHTML = buildLogSessionCardHTML();
+  if(logSessionCardHTML===null) return; // pickLogSession() auto-suggest already triggered a fresh render
 
   document.getElementById('main').innerHTML = `
     <h1 class="page-title">Program</h1>
-    <p class="page-sub">${p.name} — ${TRAINING_EXP[p.experience].label.split(' (')[0]}, ${p.daysPerWeek} days/week. Tap ✓ to mark a session done, ⇄ to move it, ✕ to remove it. Add basketball, golf, walks and more from the "+ Add activity" line on any day — including days you're already training.</p>
+    <p class="page-sub">${p.name} — ${TRAINING_EXP[p.experience].label.split(' (')[0]}, ${p.daysPerWeek} days/week. Tap a session below to load it for logging with today's targets already filled in. Tap ⇄ to move a session, ✕ to remove it. Add basketball, golf, walks and more from "+ Add activity" on any day.</p>
     ${personToggleHTML(currentPerson,'setProgramPerson')}
     ${weekStreak>0 ? `<div class="progress-chip" style="display:inline-flex;margin-bottom:14px;background:var(--p2-dim);color:var(--p2);font-weight:700;">🔥 ${weekStreak} Week Streak</div>` : ''}
     ${renderWeekBlockHTML(weekStart, 'This week')}
@@ -1894,10 +1898,18 @@ function renderProgram(){
       <button class="secondary small" onclick="toggleWeek2()">${week2Expanded ? '▲ Minimise next week' : '▼ Show next week'}</button>
     </div>
     ${week2Expanded ? `<div style="margin-top:12px;">${renderWeekBlockHTML(week2Start, 'Next week')}</div>` : ''}
+    ${logSessionCardHTML}
+    ${buildSessionInsightCardHTML()}
+    <div id="exercise-swap-sheet-root"></div>
+    ${buildLogSingleExerciseCardHTML()}
+    ${buildNextSessionCardHTML()}
     <div class="card" style="margin-top:20px;">
       <h3>Full weekly session library</h3>
-      ${split.map(s=>`<div style="margin-bottom:14px;"><strong style="font-size:13px;">${s.label}</strong>${planTable(s.exercises, currentPerson)}</div>`).join('')}
-      <p class="hint">Change days/week or experience level any time in Setup — the plan regenerates automatically.</p>
+      <select onchange="setProgramLibraryFilter(this.value)">
+        ${split.map(s=>`<option value="${s.id}" ${programLibraryFilter[currentPerson]===s.id?'selected':''}>${s.label}</option>`).join('')}
+      </select>
+      ${libSession ? `<div style="margin-top:14px;">${planTable(libSession.exercises, currentPerson)}</div>` : ''}
+      <p class="hint" style="margin-top:10px;">Change days/week or experience level any time in Setup — the plan regenerates automatically.</p>
     </div>
     <div class="card">
       <h3>🔬 Ask AI about a session</h3>
@@ -1910,7 +1922,7 @@ function renderProgram(){
     </div>
     <div class="card">
       <h3>🔄 Suggest exercise swaps for variety</h3>
-      <p class="hint">After you've run the same exercises for a while, checks how long each one's been in rotation and suggests specific swaps worth trying — always chosen from the same verified, muscle-matched exercise list used everywhere else in the app, never invented on the spot. Purely advisory — nothing changes until you apply a swap yourself via the 🔄 button in Workout Log.</p>
+      <p class="hint">After you've run the same exercises for a while, checks how long each one's been in rotation and suggests specific swaps worth trying — always chosen from the same verified, muscle-matched exercise list used everywhere else in the app, never invented on the spot. Purely advisory — nothing changes until you apply a swap yourself via the 🔄 button on an exercise above.</p>
       <select id="program-ai-variety-session">
         ${split.map(s=>`<option value="${s.id}">${s.label}</option>`).join('')}
       </select>
@@ -1928,6 +1940,7 @@ function renderProgram(){
     </div>
     <div id="day-settings-sheet-root"></div>
   `;
+  renderSetRows(); // populates the "Log a single exercise" set inputs
 }
 async function aiResearchSession(){
   const select = document.getElementById('program-ai-session');
@@ -1990,13 +2003,21 @@ function toggleSessionCompleted(weekStart, day){
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
   assignments[day].completed = !assignments[day].completed;
   save();
-  if(currentTab==='workouts') renderWorkouts(); else renderProgram();
+  renderProgram(); // only ever triggered from within the Program calendar
 }
-function setProgramPerson(key){ currentPerson=key; selectedBubble=null; expandedProgramDay=null; renderProgram(); }
-function toggleExpandDay(weekStart, day){
-  const key = weekStart+'|'+day;
-  expandedProgramDay = (expandedProgramDay===key) ? null : key;
+function setProgramPerson(key){
+  currentPerson=key; selectedBubble=null; expandedProgramDay=null;
+  pendingSets=[{weight:'',reps:''}]; sessionLogSelection=null; sessionLogSets={}; sessionAutoSuggestDone[key]=false;
   renderProgram();
+}
+function toggleExpandDay(weekStart, day){
+  const assignments = ensureWeekSchedule(currentPerson, weekStart);
+  const info = assignments[day];
+  if(!info.session) return;
+  const dayIndex = DAY_LABELS.indexOf(day);
+  sessionLogDate[currentPerson] = addDaysStr(weekStart, dayIndex);
+  pickLogSession(info.session); // loads this exact session into the Log session card, with last time's exercises + today's targets — pickLogSession() already re-renders Program
+  setTimeout(()=>{ const el = document.getElementById('log-session-card'); if(el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 60);
 }
 function assignDay(weekStart, day, value){
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
@@ -3518,7 +3539,7 @@ ${notes ? `Respond directly and specifically to what they actually wrote. Diagno
       const insight = lastSessionInsight[personKey];
       if(insight && insight.sessionLabel===sessionLabel && insight.feeling===feeling){
         insight.aiRetryMsg = msg;
-        if(currentTab==='workouts' && currentPerson===personKey) renderWorkouts();
+        if(currentTab==='program' && currentPerson===personKey) renderWorkouts();
       }
     });
     const insight = lastSessionInsight[personKey];
@@ -3527,13 +3548,13 @@ ${notes ? `Respond directly and specifically to what they actually wrote. Diagno
       insight.aiLoading = false;
       insight.aiGenerated = true;
       insight.aiError = null;
-      if(currentTab==='workouts' && currentPerson===personKey) renderWorkouts();
+      if(currentTab==='program' && currentPerson===personKey) renderWorkouts();
     }
   }catch(e){
     console.error('AI session insight failed, keeping the standard note:', e);
     const insight = lastSessionInsight[personKey];
     if(insight){ insight.aiLoading = false; insight.aiError = friendlyAIError(e.message); }
-    if(currentTab==='workouts' && currentPerson===personKey) renderWorkouts();
+    if(currentTab==='program' && currentPerson===personKey) renderWorkouts();
   }
 }
 function dismissSessionInsight(){ lastSessionInsight[currentPerson] = null; renderWorkouts(); }
@@ -3574,6 +3595,19 @@ function getSessionOptionsForPerson(personKey, forDate){
   return options;
 }
 function getDisplayExerciseName(originalName){ return sessionExerciseSwaps[originalName] || originalName; }
+function getProgressionFlags(personKey, displayName, prescribedReps, prescribedSets){
+  const history = state.workouts[personKey].filter(w=>w.exercise===displayName && !w.cardio).sort((a,b)=>a.date.localeCompare(b.date));
+  if(!history.length) return null; // nothing to compare against yet
+  const lastSession = history[history.length-1];
+  const lastBest = lastSession.sets.reduce((a,b)=> e1RM(b.weight,b.reps) > e1RM(a.weight,a.reps) ? b : a);
+  const suggestion = estimateWorkingWeight(personKey, displayName, prescribedReps);
+  const flags = [];
+  if(suggestion && suggestion.weight > lastBest.weight) flags.push('weight');
+  const repsAvgTarget = parseRepsAvg(prescribedReps);
+  if(repsAvgTarget!=null && lastBest.reps < Math.floor(repsAvgTarget)) flags.push('reps');
+  if(prescribedSets!=null && lastSession.sets.length < prescribedSets) flags.push('sets');
+  return flags.length ? flags : null;
+}
 function getPreviousSessionSnapshot(personKey, sessionId, beforeDate){
   const logs = (state.sessionLog[personKey]||[])
     .filter(l=>l.sessionId===sessionId && (!beforeDate || l.date<beforeDate))
@@ -3731,7 +3765,7 @@ function findLoggedNameForSlot(personKey, exerciseName){
   return best;
 }
 let workoutProgressionFilter = {p1:null, p2:null};
-function setWorkoutProgressionFilter(val){ workoutProgressionFilter[currentPerson] = val; renderWorkouts(); }
+function setWorkoutProgressionFilter(val){ workoutProgressionFilter[currentPerson] = val; renderProgress(); }
 function getNextTargetsSummaryText(personKey){
   const sessions = getSessionsWithExercises(personKey);
   const activeSession = sessionLogSelection ? sessions.find(s=>s.id===sessionLogSelection) : null;
@@ -3807,24 +3841,22 @@ function renderWeekSessionSummaryHTML(personKey){
   if(c.trackedCount===0) return `<div class="empty-state">Nothing scheduled yet this week — set it up in the Program tab.</div>`;
   return `<p style="font-size:18px;font-weight:800;margin:0;" class="mono">${c.doneCount}/${c.trackedCount} <span style="font-size:13px;font-weight:600;color:var(--muted);">workouts complete</span></p>`;
 }
-function renderWorkouts(){
+// Builds the "Log session" card — session+date picker, scheduled hint, last-time reference,
+// progression-aware exercise inputs, feeling/notes, save button. Lives inside Program now;
+// kept as its own builder function since it's substantial and genuinely a distinct unit.
+function buildLogSessionCardHTML(){
   const p = state.people[currentPerson];
-  const exerciseNames = allExerciseNames(currentPerson);
-  const byExercise = {};
-  state.workouts[currentPerson].forEach(w=>{ (byExercise[w.exercise] = byExercise[w.exercise]||[]).push(w); });
-  const loggedExerciseNames = Object.keys(byExercise).filter(n=>!isCardioLog(n)).sort();
-  if(!workoutProgressionFilter[currentPerson] && loggedExerciseNames.length) workoutProgressionFilter[currentPerson] = loggedExerciseNames[0];
   if(!sessionLogDate[currentPerson]) sessionLogDate[currentPerson] = todayStr();
   const sessionOptions = getSessionOptionsForPerson(currentPerson, sessionLogDate[currentPerson]);
 
-  // Auto-pull whatever's actually scheduled for this date in the Program tab, once,
-  // so the log isn't a disconnected generic list — still fully overridable below.
+  // Auto-pull whatever's actually scheduled for this date, once, so the log isn't a
+  // disconnected generic list — still fully overridable below.
   if(!sessionAutoSuggestDone[currentPerson] && !sessionLogSelection){
     sessionAutoSuggestDone[currentPerson] = true;
     const suggestedId = getScheduledSessionIdForDate(currentPerson, sessionLogDate[currentPerson]);
     if(suggestedId && sessionOptions.some(s=>s.id===suggestedId)){
-      pickLogSession(suggestedId);
-      return; // pickLogSession() re-invokes renderWorkouts() with the suggestion applied
+      pickLogSession(suggestedId); // re-invokes renderProgram() with the suggestion applied
+      return null; // signal "already re-rendering, caller should stop"
     }
   }
   const scheduledId = getScheduledSessionIdForDate(currentPerson, sessionLogDate[currentPerson]);
@@ -3836,8 +3868,6 @@ function renderWorkouts(){
       <p class="hint" style="text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px;">📋 Last ${previousSnapshot.sessionLabel} — ${fmtDate(previousSnapshot.date)}</p>
       ${previousSnapshot.exercises.map(pe=>{
         if(pe.cardio) return `<p style="font-size:13px;margin:3px 0;">${pe.exercise}: ${pe.distance?`${pe.distance}km `:''}${pe.duration?`${pe.duration} min`:''}</p>`;
-        // Best set = highest estimated 1RM (same definition the app uses everywhere else for PRs),
-        // not just the heaviest number on the page — one line per exercise, not every set.
         const best = pe.sets.reduce((a,b)=> e1RM(b.weight,b.reps) > e1RM(a.weight,a.reps) ? b : a);
         return `<p style="font-size:13px;margin:3px 0;">${pe.exercise}: ${best.weight}kg×${best.reps}${pe.sets.length>1?` <span class="hint">(best of ${pe.sets.length})</span>`:''}</p>`;
       }).join('')}
@@ -3850,6 +3880,10 @@ function renderWorkouts(){
     const tipOpen = sessionTipOpen===e.name;
     const escOrig = e.name.replace(/'/g,"\\'");
     const cardio = isCardioLog(displayName);
+    // Clear visual flag wherever today's target is genuinely higher than what was actually
+    // done last time — weight, reps, or sets — and ONLY when there's a real increase to show.
+    const flags = (!chosenSession.isActivity && e.sets) ? getProgressionFlags(currentPerson, displayName, e.reps, e.sets) : null;
+    const flagBadges = flags ? flags.map(f=>`<span class="badge pr">↑ ${f}</span>`).join(' ') : '';
     return `
     <div style="margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border);">
       <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -3858,7 +3892,7 @@ function renderWorkouts(){
           <span style="cursor:pointer;color:var(--muted);font-size:13px;" onclick="openExerciseSwapSheet('${escOrig}')" title="Substitute this exercise">🔄</span>
         </span>` : ''}
       </div>
-      ${e.sets ? `<p class="hint">Target: ${e.sets}×${e.reps}</p>` : ''}
+      ${e.sets ? `<p class="hint">Target: ${e.sets}×${e.reps} ${flagBadges}</p>` : ''}
       ${tipOpen ? `<p class="hint" style="background:var(--surface-alt);padding:8px 10px;border-radius:10px;margin-top:6px;">💡 ${getExerciseTip(displayName)}</p>` : ''}
       ${cardio ? `
       <div class="row" style="margin-top:8px;">
@@ -3879,12 +3913,10 @@ function renderWorkouts(){
     </div>`;
   }).join('') : '';
 
-  document.getElementById('main').innerHTML = `
-    <h1 class="page-title">Workout Log</h1>
-    <p class="page-sub">Pick today's session and TANDEM fills in the exercises, sets and reps — you just enter the weight. Already logging in Hevy? Mirror it here occasionally so progression and PRs stay in sync.</p>
-    ${personToggleHTML(currentPerson,'setWorkoutPerson')}
-    <div class="card">
-      <h3>Log today's session</h3>
+  return `
+    <div class="card" id="log-session-card">
+      <h3>Log a session</h3>
+      <p class="hint">Tap any session in the calendar above to load it here with last time's exercises and today's targets already filled in — or pick manually below.</p>
       <div class="row">
         <div><label>Date</label><input type="date" id="session-date" value="${sessionLogDate[currentPerson]}" onchange="onWorkoutDateChange(this.value)"></div>
         <div><label>Which session?</label>
@@ -3908,23 +3940,27 @@ function renderWorkouts(){
       </div>
       <div class="btn-row"><button onclick="saveFullSession()">Save session</button></div>
       ` : `<p class="hint" style="margin-top:10px;">Pick a session above and it'll pull in the exercises from your Program automatically, with weight already suggested.</p>`}
-    </div>
-    ${lastSessionInsight[currentPerson] ? `
+    </div>`;
+}
+function buildSessionInsightCardHTML(){
+  const insight = lastSessionInsight[currentPerson];
+  if(!insight) return '';
+  return `
     <div class="card" style="border:1px solid var(--p1);">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-        <h3 style="margin:0;">${SESSION_FEELINGS.find(f=>f.id===lastSessionInsight[currentPerson].feeling).icon} ${lastSessionInsight[currentPerson].sessionLabel} — noted</h3>
+        <h3 style="margin:0;">${SESSION_FEELINGS.find(f=>f.id===insight.feeling).icon} ${insight.sessionLabel} — noted</h3>
         <span class="del-x" onclick="dismissSessionInsight()">✕</span>
       </div>
-      ${lastSessionInsight[currentPerson].aiGenerated
-        ? lastSessionInsight[currentPerson].text
-        : `<p style="font-size:13px;line-height:1.5;margin-top:8px;">${lastSessionInsight[currentPerson].text}</p>`}
-      ${lastSessionInsight[currentPerson].aiLoading ? `<p class="hint" style="margin-top:6px;">${lastSessionInsight[currentPerson].aiRetryMsg || '✨ Getting a more personal note based on what you wrote…'}</p>` : ''}
-      ${lastSessionInsight[currentPerson].aiGenerated ? `<p class="hint" style="margin-top:6px;">✨ Personalised by AI based on your note.</p>` : ''}
-      ${lastSessionInsight[currentPerson].aiError ? `<p class="hint" style="margin-top:6px;color:var(--danger);">⚠ AI note failed: ${lastSessionInsight[currentPerson].aiError}</p>` : ''}
-      ${lastSessionInsight[currentPerson].notes ? `<p class="hint" style="margin-top:8px;">Your note: "${lastSessionInsight[currentPerson].notes}"</p>` : ''}
-    </div>` : ''}
-    <div id="exercise-swap-sheet-root"></div>
-
+      ${insight.aiGenerated ? insight.text : `<p style="font-size:13px;line-height:1.5;margin-top:8px;">${insight.text}</p>`}
+      ${insight.aiLoading ? `<p class="hint" style="margin-top:6px;">${insight.aiRetryMsg || '✨ Getting a more personal note based on what you wrote…'}</p>` : ''}
+      ${insight.aiGenerated ? `<p class="hint" style="margin-top:6px;">✨ Personalised by AI based on your note.</p>` : ''}
+      ${insight.aiError ? `<p class="hint" style="margin-top:6px;color:var(--danger);">⚠ AI note failed: ${insight.aiError}</p>` : ''}
+      ${insight.notes ? `<p class="hint" style="margin-top:8px;">Your note: "${insight.notes}"</p>` : ''}
+    </div>`;
+}
+function buildLogSingleExerciseCardHTML(){
+  const exerciseNames = allExerciseNames(currentPerson);
+  return `
     <div class="card">
       <h3>Log a single exercise</h3>
       <p class="hint">For anything outside your usual split, extra accessory work, or any cardio (treadmill, bike, a run, etc).</p>
@@ -3948,61 +3984,21 @@ function renderWorkouts(){
         </div>
       </div>
       <div class="btn-row"><button onclick="saveWorkout()">Save</button></div>
-    </div>
+    </div>`;
+}
+function buildNextSessionCardHTML(){
+  const p = state.people[currentPerson];
+  return `
     <div class="card">
       <h3>🎯 Next session — ${p.name}</h3>
       <p class="hint">What to aim for each exercise next time, based on ${p.name}'s own logged history and 1RMs — always up to date, come back any week to check it.</p>
       ${renderNextTargetsHTML(currentPerson)}
       <div class="btn-row"><button class="secondary small" onclick="aiExplainNextTargets()">✨ Get AI coaching tips for this session</button></div><p class="hint" id="ai-targets-note" style="margin-top:6px;"></p>
-    </div>
-    <div class="card">
-      <h3>This week's sessions</h3>
-      ${renderWeekSessionSummaryHTML(currentPerson)}
-    </div>
-    <div class="card">
-      <h3>🎯 1-Rep Maxes (optional)</h3>
-      <p class="hint">Know your 1RM for an exercise? Add it and TANDEM will suggest a working weight for every session straight away instead of waiting for logged history.</p>
-      <div class="row">
-        <div><label>Exercise</label>
-          <input list="exercise-list" id="orm-exercise" placeholder="Type or pick an exercise">
-        </div>
-        <div><label>1RM (kg)</label><input type="number" step="0.5" id="orm-weight"></div>
-      </div>
-      <div class="btn-row"><button class="secondary small" onclick="addOneRepMax()">Save 1RM</button></div>
-      ${Object.keys(state.oneRepMax[currentPerson]||{}).length ? `
-      <table style="margin-top:12px;">
-        <thead><tr><th>Exercise</th><th>1RM</th><th></th></tr></thead>
-        <tbody>${Object.entries(state.oneRepMax[currentPerson]).map(([ex,w])=>`<tr><td>${ex}</td><td>${w}kg</td><td><span class="del-x" onclick="deleteOneRepMax('${ex}')">✕</span></td></tr>`).join('')}</tbody>
-      </table>` : ''}
-    </div>
-    <div class="card">
-      <h3>Progression</h3>
-      ${loggedExerciseNames.length ? `
-        <select onchange="setWorkoutProgressionFilter(this.value)" style="margin-bottom:12px;">
-          ${loggedExerciseNames.map(ex=>`<option value="${ex}" ${workoutProgressionFilter[currentPerson]===ex?'selected':''}>${ex}</option>`).join('')}
-        </select>
-        ${(()=>{
-          const ex = workoutProgressionFilter[currentPerson];
-          const sess = byExercise[ex] || [];
-          const sorted = [...sess].sort((a,b)=>a.date.localeCompare(b.date));
-          const withE1RM = sorted.map(s=>({date:s.date, best: Math.max(...s.sets.map(x=>e1RM(x.weight,x.reps)))}));
-          const best = Math.max(...withE1RM.map(x=>x.best));
-          const last = withE1RM[withE1RM.length-1];
-          const isPR = last.best >= best - 0.001;
-          return `<div>
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-              <strong style="font-size:14px;">${ex}</strong>
-              ${isPR && withE1RM.length>1 ? '<span class="badge pr">PR ↑</span>' : ''}
-            </div>
-            <p class="hint" style="margin:4px 0 0 0;">Est. 1RM trend: ${withE1RM.map(x=>Math.round(x.best)+'kg').join(' → ')}</p>
-          </div>`;
-        })()}
-      ` : `<div class="empty-state">No workouts logged yet for ${p.name}.</div>`}
-    </div>
-  `;
-  renderSetRows();
+    </div>`;
 }
-function setWorkoutPerson(key){ currentPerson=key; pendingSets=[{weight:'',reps:''}]; sessionLogSelection=null; sessionLogSets={}; sessionAutoSuggestDone[key]=false; renderWorkouts(); }
+// Kept as a thin compatibility alias — a lot of functions still call renderWorkouts() to
+// trigger a re-render after a state change; all of that content now lives inside Program.
+function renderWorkouts(){ renderProgram(); }
 function addOneRepMax(){
   const exercise = document.getElementById('orm-exercise').value.trim();
   const weight = parseFloat(document.getElementById('orm-weight').value);
@@ -4010,12 +4006,12 @@ function addOneRepMax(){
   if(!state.oneRepMax[currentPerson]) state.oneRepMax[currentPerson] = {};
   state.oneRepMax[currentPerson][exercise] = weight;
   save();
-  renderWorkouts();
+  renderProgress();
 }
 function deleteOneRepMax(exercise){
   delete state.oneRepMax[currentPerson][exercise];
   save();
-  renderWorkouts();
+  renderProgress();
 }
 function renderSetRows(){
   const container = document.getElementById('sets-container');
@@ -4196,7 +4192,24 @@ function renderProgress(){
         {label:'Top set weight (kg)', color:'#8890A0', dashed:true, points: exerciseHistory.map(s=>({x:s.date, y:Math.max(...s.sets.map(x=>x.weight))}))},
       ])}</div>` : `<div class="empty-state" style="margin-top:14px;">Log this exercise at least twice to see a trend.</div>`}
       ${exerciseHistory.length ? `<p class="hint" style="margin-top:10px;">Best set each session (weight × reps): ${exerciseHistory.map(s=>`${Math.max(...s.sets.map(x=>x.weight))}kg×${s.sets.find(x=>x.weight===Math.max(...s.sets.map(y=>y.weight))).reps}`).join(' → ')}</p>` : ''}
-      ` : `<div class="empty-state">Log a workout in the Workout Log tab to see per-exercise progress here.</div>`}
+      ` : `<div class="empty-state">Log a workout in the Program tab to see per-exercise progress here.</div>`}
+    </div>
+    <div class="card">
+      <h3>🎯 1-Rep Maxes (optional)</h3>
+      <p class="hint">Know your 1RM for an exercise? Add it and TANDEM will suggest a working weight for every session straight away instead of waiting for logged history.</p>
+      <div class="row">
+        <div><label>Exercise</label>
+          <input list="exercise-list-progress" id="orm-exercise" placeholder="Type or pick an exercise">
+          <datalist id="exercise-list-progress">${allExerciseNames(currentPerson).map(e=>`<option value="${e}">`).join('')}</datalist>
+        </div>
+        <div><label>1RM (kg)</label><input type="number" step="0.5" id="orm-weight"></div>
+      </div>
+      <div class="btn-row"><button class="secondary small" onclick="addOneRepMax()">Save 1RM</button></div>
+      ${Object.keys(state.oneRepMax[currentPerson]||{}).length ? `
+      <table style="margin-top:12px;">
+        <thead><tr><th>Exercise</th><th>1RM</th><th></th></tr></thead>
+        <tbody>${Object.entries(state.oneRepMax[currentPerson]).map(([ex,w])=>`<tr><td>${ex}</td><td>${w}kg</td><td><span class="del-x" onclick="deleteOneRepMax('${ex}')">✕</span></td></tr>`).join('')}</tbody>
+      </table>` : ''}
     </div>
     ${cardioNames.length ? `
     <div class="card">
@@ -4287,6 +4300,9 @@ function setProgressCardio(name){ progressCardio[currentPerson] = name; renderPr
    ROUTER
    ========================================================= */
 function render(){
+  // "workouts" was a standalone tab in older saved state — its content now lives inside
+  // Program (logging) and Progress (1RMs/trends), so redirect rather than show a blank page.
+  if(currentTab==='workouts') currentTab = 'program';
   renderBottomNav();
   updateSyncIndicator();
   updateAIQuotaBanner();
@@ -4297,7 +4313,6 @@ function render(){
   else if(currentTab==='setup') renderSetup();
   else if(currentTab==='log') renderLog();
   else if(currentTab==='bodycomp') renderBodyComp();
-  else if(currentTab==='workouts') renderWorkouts();
   else if(currentTab==='progress') renderProgress();
 }
 async function initApp(){
