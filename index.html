@@ -1016,16 +1016,17 @@ function getWeeklySplit(personKey){
 function homeWorkoutPlan(person){
   const bump = person.phase==='leanBulk';
   return [
-    {name:'Walking Pad Warm-Up', sets:1, reps:'5 min @ speed 3', restSec:0},
-    {name:'DB Goblet Squat (7.5kg combined)', sets: bump?4:3, reps:'12–15', restSec:60},
-    {name:'Resistance Band Row (12.5kg band)', sets: bump?4:3, reps:'15–20', restSec:60},
-    {name:'DB Shoulder Press (5kg each)', sets:3, reps:'10–12', restSec:60},
-    {name:'Glute Band Hip Thrust', sets:3, reps:'15–20 / side', restSec:45},
-    {name:'DB Romanian Deadlift (7.5kg combined)', sets:3, reps:'12–15', restSec:60},
-    {name:'Band Bicep Curl', sets:2, reps:'15', restSec:45},
+    {name:'Jump Rope Warm-Up', sets:1, reps:'3 min easy (30s on / 15s off)', restSec:0},
+    {name:'DB Goblet Squat (15kg)', sets: bump?4:3, reps:'10–12', restSec:75},
+    {name:'Single-Arm DB Row (15kg)', sets: bump?4:3, reps:'10–12 / side', restSec:60},
+    {name:'DB Floor Press (15kg each)', sets: bump?4:3, reps:'10–12', restSec:75},
+    {name:'DB Romanian Deadlift (15kg each)', sets:3, reps:'10–12', restSec:75},
+    {name:'DB Shoulder Press (15kg each)', sets:3, reps:'6–10', restSec:75},
+    {name:'DB Reverse Lunge (15kg each)', sets:3, reps:'8–10 / side', restSec:60},
+    {name:'DB Hammer Curl (15kg each)', sets:2, reps:'8–12', restSec:45},
     {name:'Band Overhead Tricep Extension', sets:2, reps:'15', restSec:45},
     {name:'Plank', sets:3, reps:'30–45 sec', restSec:30},
-    {name:'Walking Pad Finisher', sets:1, reps:'10 min @ speed 4–5', restSec:0},
+    {name:'Jump Rope Finisher', sets:1, reps:'6 rounds: 40s on / 20s off', restSec:0},
   ];
 }
 // Broader library of cardio/activity types loggable individually — separate from the
@@ -1071,6 +1072,11 @@ const EXTRA_EXERCISE_TIPS = {
   'Front Squat': 'Elbows up high to keep the bar on your shoulders, stay upright through the torso, full depth with control.',
   'Goblet Squat': 'Hold the weight close to your chest, sit down between your knees rather than back, keep your chest tall.',
   'Farmer\u2019s Carry': 'Brace your core like you\u2019re about to be punched, walk with control — don\u2019t let the weights swing or your shoulders round forward.',
+  'Jump Rope Warm-Up': 'Stay light on the balls of your feet, small hops just high enough to clear the rope, turn it with your wrists rather than your whole arms.',
+  'Jump Rope Finisher': 'Push the pace on the \u201con\u201d intervals but keep the hops low and quiet — if you trip, just reset and keep going until the timer ends.',
+  'DB Floor Press (15kg each)': 'Lie on the floor, lower until your upper arms lightly touch the ground, pause, then press — elbows at ~45° from your body, not flared out wide.',
+  'Single-Arm DB Row (15kg)': 'Brace your free hand on a chair or knee, flat back, pull the dumbbell toward your hip rather than straight up to your shoulder.',
+  'DB Hammer Curl (15kg each)': 'Palms facing each other, elbows pinned to your sides, no swinging — drop the reps before you start using momentum.',
   'Kettlebell Swing': 'This is a hip hinge, not a squat — power comes from snapping your hips forward, not from your arms lifting the bell.',
 };
 Object.assign(EXERCISE_TIPS, EXTRA_EXERCISE_TIPS);
