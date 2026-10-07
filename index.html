@@ -942,6 +942,7 @@ function findExerciseGroup(name){
   return null;
 }
 function getExerciseSubstitutes(name){
+  if(HOME_EXERCISE_ALTS[name]) return HOME_EXERCISE_ALTS[name];
   const group = findExerciseGroup(name);
   if(!group) return [];
   const all = new Set();
@@ -1013,19 +1014,57 @@ function getWeeklySplit(personKey){
     return {id: (type+'-'+counts[type]).replace(/\s/g,''), type, label, exercises};
   });
 }
+// Home equipment: 2x 15kg dumbbells, skipping rope, walking pad, resistance bands (incl. glute band).
+// Weights live in HOME_DEFAULT_KG (prefilled into the kg box) rather than in exercise names, so
+// history stays on one name even if the dumbbells change. 0 = bodyweight/band.
+const HOME_DEFAULT_KG = {
+  'DB Goblet Squat':15, 'DB Front Squat':30, 'DB Bulgarian Split Squat':30, 'DB Step-Up':30, 'Band Squat':0, 'Jump Squat':0,
+  'Single-Arm DB Row':15, 'Bent-Over DB Row':30, 'Resistance Band Row':0, 'DB Renegade Row':30, 'DB Pullover':15,
+  'DB Floor Press':30, 'Push-Up':0, 'Deficit Push-Up':0, 'DB Floor Fly':30, 'Band Chest Press':0,
+  'DB Romanian Deadlift':30, 'Single-Leg DB RDL':15, 'DB Sumo Deadlift':15, 'DB Swing':15, 'Band Good Morning':0,
+  'Glute Band Hip Thrust':0, 'DB Hip Thrust':15, 'Single-Leg Glute Bridge':0, 'Glute Band Kickback':0, 'Glute Band Lateral Walk':0,
+  'DB Shoulder Press':30, 'DB Arnold Press':30, 'Pike Push-Up':0, 'DB Lateral Raise':15, 'Band Shoulder Press':0,
+  'DB Reverse Lunge':30, 'DB Walking Lunge':30, 'DB Lateral Lunge':15,
+  'Band Pull-Apart':0, 'Band Face Pull':0, 'DB Rear Delt Fly':15, 'Band Rear Delt Fly':0,
+  'DB Hammer Curl':30, 'DB Bicep Curl':30, 'Band Bicep Curl':0, 'DB Concentration Curl':15,
+  'Band Overhead Tricep Extension':0, 'DB Overhead Tricep Extension':15, 'DB Skull Crusher':30, 'Band Tricep Pushdown':0, 'Diamond Push-Up':0,
+  'Plank':0, 'Side Plank':0, 'Dead Bug':0, 'Mountain Climbers':0, 'DB Russian Twist':15, 'Bicycle Crunch':0,
+};
+// Swap options for each home slot — every one doable with the home gear above.
+const HOME_EXERCISE_ALTS = {
+  'DB Goblet Squat':['DB Front Squat','DB Bulgarian Split Squat','DB Step-Up','Band Squat','Jump Squat'],
+  'Single-Arm DB Row':['Bent-Over DB Row','Resistance Band Row','DB Renegade Row','DB Pullover'],
+  'DB Floor Press':['Push-Up','Deficit Push-Up','DB Floor Fly','Band Chest Press'],
+  'DB Romanian Deadlift':['Single-Leg DB RDL','DB Sumo Deadlift','DB Swing','Band Good Morning'],
+  'Glute Band Hip Thrust':['DB Hip Thrust','Single-Leg Glute Bridge','Glute Band Kickback','Glute Band Lateral Walk'],
+  'DB Shoulder Press':['DB Arnold Press','Pike Push-Up','DB Lateral Raise','Band Shoulder Press'],
+  'DB Reverse Lunge':['DB Walking Lunge','DB Bulgarian Split Squat','DB Lateral Lunge','DB Step-Up'],
+  'Band Pull-Apart':['Band Face Pull','DB Rear Delt Fly','Band Rear Delt Fly'],
+  'DB Hammer Curl':['DB Bicep Curl','Band Bicep Curl','DB Concentration Curl'],
+  'Band Overhead Tricep Extension':['DB Overhead Tricep Extension','DB Skull Crusher','Band Tricep Pushdown','Diamond Push-Up'],
+  'Plank':['Side Plank','Dead Bug','Mountain Climbers','DB Russian Twist','Bicycle Crunch'],
+  'Walking Pad Warm-Up':['Jump Rope Warm-Up'],
+  'Jump Rope Finisher':['Walking Pad Incline Walk','Walking Pad Intervals'],
+  'Walking Pad Cool-Down':[],
+};
+// Timed home work — logged as duration (minutes) rather than kg × reps.
+const HOME_CARDIO_DEFAULT_MIN = {
+  'Walking Pad Warm-Up':5, 'Jump Rope Warm-Up':3, 'Jump Rope Finisher':6,
+  'Walking Pad Incline Walk':10, 'Walking Pad Intervals':10, 'Walking Pad Cool-Down':10,
+};
 function homeWorkoutPlan(person){
   const bump = person.phase==='leanBulk';
   return [
     {name:'Walking Pad Warm-Up', sets:1, reps:'5 min @ speed 3', restSec:0},
-    {name:'DB Goblet Squat (15kg)', sets: bump?4:3, reps:'10–12', restSec:75},
-    {name:'Single-Arm DB Row (15kg)', sets: bump?4:3, reps:'10–12 / side', restSec:60},
-    {name:'DB Floor Press (15kg each)', sets: bump?4:3, reps:'10–12', restSec:75},
-    {name:'DB Romanian Deadlift (15kg each)', sets:3, reps:'10–12', restSec:75},
+    {name:'DB Goblet Squat', sets: bump?4:3, reps:'10–12', restSec:75},
+    {name:'Single-Arm DB Row', sets: bump?4:3, reps:'10–12 / side', restSec:60},
+    {name:'DB Floor Press', sets: bump?4:3, reps:'10–12', restSec:75},
+    {name:'DB Romanian Deadlift', sets:3, reps:'10–12', restSec:75},
     {name:'Glute Band Hip Thrust', sets:3, reps:'15–20', restSec:45},
-    {name:'DB Shoulder Press (15kg each)', sets:3, reps:'6–10', restSec:75},
-    {name:'DB Reverse Lunge (15kg each)', sets:3, reps:'8–10 / side', restSec:60},
+    {name:'DB Shoulder Press', sets:3, reps:'6–10', restSec:75},
+    {name:'DB Reverse Lunge', sets:3, reps:'8–10 / side', restSec:60},
     {name:'Band Pull-Apart', sets:2, reps:'15–20', restSec:30},
-    {name:'DB Hammer Curl (15kg each)', sets:2, reps:'8–12', restSec:45},
+    {name:'DB Hammer Curl', sets:2, reps:'8–12', restSec:45},
     {name:'Band Overhead Tricep Extension', sets:2, reps:'15', restSec:45},
     {name:'Plank', sets:3, reps:'30–45 sec', restSec:30},
     {name:'Jump Rope Finisher', sets:1, reps:'6 rounds: 40s on / 20s off', restSec:0},
@@ -1041,6 +1080,7 @@ const CARDIO_LOG_NAMES = [
 function isCardioLog(name){
   if(!name) return false;
   if(CARDIO_LOG_NAMES.includes(name)) return true;
+  if(name in HOME_CARDIO_DEFAULT_MIN) return true;
   if(Object.values(CARDIO_PRESCRIPTIONS).some(byPhase=>Object.values(byPhase).some(p=>p.name===name))) return true;
   if(ACTIVITY_TYPES.some(a=>a.label===name)) return true;
   return false;
@@ -1077,9 +1117,9 @@ const EXTRA_EXERCISE_TIPS = {
   'Farmer\u2019s Carry': 'Brace your core like you\u2019re about to be punched, walk with control — don\u2019t let the weights swing or your shoulders round forward.',
   'Band Pull-Apart': 'Arms straight at shoulder height, pull the band to your chest by squeezing your shoulder blades together — balances out all the pressing.',
   'Jump Rope Finisher': 'Stay light on the balls of your feet and turn the rope with your wrists — push the pace on the \u201con\u201d intervals but keep the hops low and quiet. If you trip, just reset and keep going until the timer ends.',
-  'DB Floor Press (15kg each)': 'Lie on the floor, lower until your upper arms lightly touch the ground, pause, then press — elbows at ~45° from your body, not flared out wide.',
-  'Single-Arm DB Row (15kg)': 'Brace your free hand on a chair or knee, flat back, pull the dumbbell toward your hip rather than straight up to your shoulder.',
-  'DB Hammer Curl (15kg each)': 'Palms facing each other, elbows pinned to your sides, no swinging — drop the reps before you start using momentum.',
+  'DB Floor Press': 'Lie on the floor, lower until your upper arms lightly touch the ground, pause, then press — elbows at ~45° from your body, not flared out wide.',
+  'Single-Arm DB Row': 'Brace your free hand on a chair or knee, flat back, pull the dumbbell toward your hip rather than straight up to your shoulder.',
+  'DB Hammer Curl': 'Palms facing each other, elbows pinned to your sides, no swinging — drop the reps before you start using momentum.',
   'Kettlebell Swing': 'This is a hip hinge, not a squat — power comes from snapping your hips forward, not from your arms lifting the bell.',
 };
 Object.assign(EXERCISE_TIPS, EXTRA_EXERCISE_TIPS);
@@ -1088,6 +1128,7 @@ function allExerciseNames(personKey){
   state.workouts[personKey].forEach(w=>set.add(w.exercise));
   Object.values(EXERCISE_POOL).forEach(byExp=>Object.values(byExp).forEach(arr=>arr.forEach(n=>set.add(n))));
   homeWorkoutPlan(state.people[personKey]).forEach(e=>set.add(e.name));
+  Object.values(HOME_EXERCISE_ALTS).forEach(arr=>arr.forEach(n=>set.add(n)));
   Object.values(CARDIO_PRESCRIPTIONS).forEach(byPhase=>Object.values(byPhase).forEach(p=>set.add(p.name)));
   CARDIO_LOG_NAMES.forEach(n=>set.add(n));
   ACTIVITY_TYPES.forEach(a=>{ if(a.id!=='other') set.add(a.label); });
@@ -3513,6 +3554,7 @@ function deleteBodyComp(id){ state.bodycomp[currentPerson] = state.bodycomp[curr
 let pendingSets = [{weight:'',reps:''}];
 let sessionLogSelection = null; // which session id is chosen in the "log full session" flow
 let sessionLogSets = {};        // { exerciseName: [{weight,reps}, ...] } — always keyed by ORIGINAL exercise name
+let sessionRemovedExercises = new Set(); // exercises removed from the session being logged
 let sessionExerciseSwaps = {};  // { originalName: substitutedName } — for "machine's busy, use this instead"
 let sessionLogDate = {p1:null, p2:null};       // the date currently selected in the Workout Log form, per person
 let sessionAutoSuggestDone = {p1:false, p2:false}; // avoids re-forcing the suggestion over a manual pick every render
@@ -3631,6 +3673,7 @@ function pickLogSession(sessionId){
   sessionLogSelection = sessionId || null;
   sessionLogSets = {};
   sessionExerciseSwaps = {};
+  sessionRemovedExercises = new Set();
   if(sessionId){
     const sessions = getSessionOptionsForPerson(currentPerson, sessionLogDate[currentPerson]);
     const session = sessions.find(s=>s.id===sessionId);
@@ -3648,14 +3691,31 @@ function pickLogSession(sessionId){
             if(lastUsed && lastUsed.exercise !== e.name) sessionExerciseSwaps[e.name] = lastUsed.exercise;
           }
           const displayName = getDisplayExerciseName(e.name);
-          const suggestion = estimateWorkingWeight(currentPerson, displayName, e.reps);
-          const repsAvg = parseRepsAvg(e.reps);
-          const repTarget = repsAvg!==null ? Math.round(repsAvg) : '';
-          sessionLogSets[e.name] = Array.from({length: e.sets}, ()=>({weight: suggestion ? suggestion.weight : '', reps: repTarget}));
+          sessionLogSets[e.name] = defaultSetsFor(displayName, e);
         });
       }
     }
   }
+  renderWorkouts();
+}
+// Prefill: suggested/last-used weight (else the home default kg) and the TOP of the rep range.
+function defaultSetsFor(displayName, e){
+  if(isCardioLog(displayName)) return [{duration: HOME_CARDIO_DEFAULT_MIN[displayName] ?? '', distance:''}];
+  const suggestion = estimateWorkingWeight(currentPerson, displayName, e.reps);
+  const repsTop = parseRepsTop(e.reps);
+  const weight = suggestion ? suggestion.weight : (HOME_DEFAULT_KG[displayName] ?? '');
+  return Array.from({length: e.sets}, ()=>({weight, reps: repsTop!==null ? repsTop : ''}));
+}
+function removeSessionExercise(originalName){
+  sessionRemovedExercises.add(originalName);
+  delete sessionLogSets[originalName];
+  renderWorkouts();
+}
+function restoreSessionExercise(originalName){
+  sessionRemovedExercises.delete(originalName);
+  const session = getSessionOptionsForPerson(currentPerson, sessionLogDate[currentPerson]).find(s=>s.id===sessionLogSelection);
+  const e = session && session.exercises && session.exercises.find(x=>x.name===originalName);
+  if(e) sessionLogSets[originalName] = defaultSetsFor(getDisplayExerciseName(originalName), e);
   renderWorkouts();
 }
 function updateSessionSetField(exerciseName, idx, field, value){
@@ -3699,6 +3759,10 @@ function closeExerciseSwapSheet(){ const el=document.getElementById('exercise-sw
 function substituteExercise(originalName, newName){
   if(newName) sessionExerciseSwaps[originalName] = newName;
   else delete sessionExerciseSwaps[originalName];
+  // Re-prefill for the exercise now shown (its own kg/reps, or duration if it's timed)
+  const session = getSessionOptionsForPerson(currentPerson, sessionLogDate[currentPerson]).find(s=>s.id===sessionLogSelection);
+  const e = session && session.exercises && session.exercises.find(x=>x.name===originalName);
+  if(e) sessionLogSets[originalName] = defaultSetsFor(getDisplayExerciseName(originalName), e);
   closeExerciseSwapSheet();
   renderWorkouts();
 }
@@ -3746,6 +3810,7 @@ function saveFullSession(){
   sessionLogSelection = null;
   sessionLogSets = {};
   sessionExerciseSwaps = {};
+  sessionRemovedExercises = new Set();
   sessionFeeling[currentPerson] = null;
   sessionNotesText[currentPerson] = '';
   renderWorkouts();
@@ -3882,7 +3947,7 @@ function buildLogSessionCardHTML(){
       }).join('')}
     </div>` : '';
 
-  const fullSessionExercisesHTML = chosenSession ? (chosenSession.isActivity ? [{name: chosenSession.activityName}] : chosenSession.exercises.filter(e=>e.group!=='cardio')).map(e=>{
+  const fullSessionExercisesHTML = chosenSession ? (chosenSession.isActivity ? [{name: chosenSession.activityName}] : chosenSession.exercises.filter(e=>e.group!=='cardio' && !sessionRemovedExercises.has(e.name))).map(e=>{
     const sets = sessionLogSets[e.name] || [];
     const displayName = getDisplayExerciseName(e.name);
     const isSwapped = displayName !== e.name;
@@ -3899,6 +3964,7 @@ function buildLogSessionCardHTML(){
         <strong style="font-size:14px;cursor:pointer;" onclick="toggleSessionTip('${escOrig}')">${displayName}${isSwapped?` <span class="hint" style="font-weight:400;">(was ${e.name})</span>`:''} <span style="color:var(--p1);font-size:12px;">${tipOpen?'▲':'ⓘ tap for cues'}</span></strong>
         ${!chosenSession.isActivity ? `<span style="display:flex;gap:10px;align-items:center;">
           <span style="cursor:pointer;color:var(--muted);font-size:13px;" onclick="openExerciseSwapSheet('${escOrig}')" title="Substitute this exercise">🔄</span>
+          <span class="del-x" onclick="removeSessionExercise('${escOrig}')" title="Remove from this session">✕</span>
         </span>` : ''}
       </div>
       ${e.sets ? `<p class="hint">Target: ${e.sets}×${e.reps} ${flagBadges}</p>` : ''}
@@ -3920,7 +3986,7 @@ function buildLogSessionCardHTML(){
       <div class="btn-row"><button class="secondary small" onclick="addSessionSetRow('${escOrig}')">+ Add set</button></div>
       `}
     </div>`;
-  }).join('') : '';
+  }).join('') + (sessionRemovedExercises.size ? `<p class="hint">Removed: ${[...sessionRemovedExercises].map(n=>`${getDisplayExerciseName(n)} <span style="color:var(--p1);cursor:pointer;" onclick="restoreSessionExercise('${n.replace(/'/g,"\\'")}')">↺ add back</span>`).join(' · ')}</p>` : '') : '';
 
   return `
     <div class="card" id="log-session-card">
