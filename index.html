@@ -1221,6 +1221,16 @@ function autoAssignSessions(personKey, schedule){
   const split = getWeeklySplit(personKey);
   const n = split.length;
   if(!n) return;
+  // If work days are marked, put sessions on days off first (gym mornings are the easy win),
+  // spilling onto work days only when there aren't enough days off.
+  const offIdx = DAY_LABELS.map((d,i)=>i).filter(i=>!schedule[DAY_LABELS[i]].working);
+  if(offIdx.length < 7){
+    const workIdx = DAY_LABELS.map((d,i)=>i).filter(i=>schedule[DAY_LABELS[i]].working);
+    const pickSpread = (pool, k) => Array.from({length:k}, (_,i)=>pool[Math.floor(i*pool.length/k)]);
+    const days = offIdx.length >= n ? pickSpread(offIdx, n) : [...offIdx, ...pickSpread(workIdx, n-offIdx.length)];
+    days.sort((a,b)=>a-b).forEach((idx,i)=>{ schedule[DAY_LABELS[idx]].session = split[i].id; });
+    return;
+  }
   const usedIdx = new Set();
   for(let i=0;i<n;i++){
     let idx = Math.round(i*7/n) % 7;
@@ -1417,7 +1427,7 @@ function suggestTrainingWindow(shiftStart, shiftEnd){
   if(s >= 12*60){
     return `Train this morning — aim to finish by ${minutesToTime(s-45)}, before your ${shiftStart} start.`;
   }
-  return `Early shift — train as soon as you get home (from about ${minutesToTime(e+30)}), before you sit down. A home workout skips the gym drive and still counts.`;
+  return `Early shift — train straight after you finish (from about ${minutesToTime(e)}), before you sit down. A home workout skips the gym drive and still counts.`;
 }
 function mealTimingForShift(shiftStart, shiftEnd){
   const s = timeToMinutes(shiftStart), e = timeToMinutes(shiftEnd);
@@ -1614,8 +1624,8 @@ function startWorkoutCardHTML(key){
   // (no drive, ~same time as the round trip) and keep the gym as the secondary option.
   if(info.working && !isHome){
     const msg = shiftEndMin!==null && nowMin < shiftEndMin
-      ? `🥡 Work till ${info.shiftEnd}. The plan: walk in, get changed, start the home workout — before you sit down. No drive needed.`
-      : `🥡 Shift's done. Don't sit down yet — get changed and start. 10 minutes in, you'll want to finish.`;
+      ? `🥡 Work till ${info.shiftEnd}. The plan: the moment you log off, get changed and start the home workout — straight from work to workout, before you hit the couch.`
+      : `🥡 Work's done. Close the laptop, get changed, start now — before you sit down. 10 minutes in, you'll want to finish.`;
     return `<div class="card" style="border-color:var(--${accent});">${header}
       <p class="hint">${msg}</p>
       <div class="btn-row" style="flex-wrap:wrap;">
@@ -1985,6 +1995,12 @@ function renderWeekBlockHTML(weekStart, weekBadgeLabel){
         <div class="cal-week-range">${rangeLabel}<span class="cal-week-badge">${weekBadgeLabel}</span></div>
         <p class="hint" style="margin-top:4px;">${scheduled} / ${split.length} sessions scheduled ${homeUsed?'· home workout used':'· 1 home workout swap available'}</p>
         <div class="cal-week-dots">${dotsHTML}</div>
+        <p class="hint" style="margin-top:8px;">🥡 Work days (tap to toggle):</p>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">${DAY_LABELS.map(day=>{
+          const w = assignments[day].working;
+          return `<span onclick="toggleWorkDay('${weekStart}','${day}')" style="cursor:pointer;padding:4px 9px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid ${w?'var(--warn)':'var(--border)'};color:${w?'var(--warn)':'var(--muted)'};">${day}</span>`;
+        }).join('')}</div>
+        ${DAY_LABELS.some(d=>assignments[d].working) ? `<p class="hint" style="margin-top:4px;">🔄 Auto-fill week (below) puts gym sessions on days off.</p>` : ''}
         ${weekGoalHit ? `<p class="hint" style="color:var(--success);margin-top:6px;font-weight:700;">🎉 Week complete — every planned session/activity is ticked off!</p>` : `<p class="hint" style="margin-top:6px;">${doneDays.length}/${trackedDays.length} done this week</p>`}
       </div>
       <button class="secondary small" onclick="resetWeekSchedule('${currentPerson}','${weekStart}')">↻ Reset</button>
@@ -2212,12 +2228,30 @@ function clickEmptySlot(weekStart, day){
 function setWorkInfo(weekStart, day, field, value){
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
   assignments[day][field] = value;
+  applyShiftDefaults(currentPerson, assignments[day], field);
   save();
   if(daySettingsSheetOpen && daySettingsSheetOpen.day===day){
     openDaySettingsSheet(weekStart, day); // refresh the sheet in place, keep it open
   } else {
     renderProgram();
   }
+}
+// Shift times are remembered per person (default 06:00–15:00), so marking a work day is one tap.
+function applyShiftDefaults(personKey, info, field){
+  const p = state.people[personKey];
+  if(field==='shiftStart' && info.shiftStart) p.lastShiftStart = info.shiftStart;
+  if(field==='shiftEnd' && info.shiftEnd) p.lastShiftEnd = info.shiftEnd;
+  if(field==='working' && info.working){
+    if(!info.shiftStart) info.shiftStart = p.lastShiftStart || '06:00';
+    if(!info.shiftEnd) info.shiftEnd = p.lastShiftEnd || '15:00';
+  }
+}
+function toggleWorkDay(weekStart, day){
+  const info = ensureWeekSchedule(currentPerson, weekStart)[day];
+  info.working = !info.working;
+  applyShiftDefaults(currentPerson, info, 'working');
+  save();
+  renderProgram();
 }
 function clearDaySession(weekStart, day){
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
