@@ -1417,7 +1417,7 @@ function suggestTrainingWindow(shiftStart, shiftEnd){
   if(s >= 12*60){
     return `Train this morning — aim to finish by ${minutesToTime(s-45)}, before your ${shiftStart} start.`;
   }
-  return `Early shift — train after you finish, from about ${minutesToTime(e+30)} onward.`;
+  return `Early shift — train as soon as you get home (from about ${minutesToTime(e+30)}), before you sit down. A home workout skips the gym drive and still counts.`;
 }
 function mealTimingForShift(shiftStart, shiftEnd){
   const s = timeToMinutes(shiftStart), e = timeToMinutes(shiftEnd);
@@ -1606,9 +1606,26 @@ function startWorkoutCardHTML(key){
   const isHome = info.session==='home';
   const session = isHome ? {label:'🏠 Home Workout'} : getWeeklySplit(key).find(s=>s.id===info.session);
   if(!session) return '';
-  const afternoon = new Date().getHours() >= 12;
-  return `<div class="card" style="border-color:var(--${accent});">
-    <h3><span class="dot" style="background:var(--${accent})"></span>${p.name} — today: ${session.label}</h3>
+  const now = new Date();
+  const nowMin = now.getHours()*60 + now.getMinutes();
+  const shiftEndMin = info.working ? timeToMinutes(info.shiftEnd) : null;
+  const header = `<h3><span class="dot" style="background:var(--${accent})"></span>${p.name} — today: ${session.label}</h3>`;
+  // Shift day: by the time work's done the gym drive is the barrier, so lead with home
+  // (no drive, ~same time as the round trip) and keep the gym as the secondary option.
+  if(info.working && !isHome){
+    const msg = shiftEndMin!==null && nowMin < shiftEndMin
+      ? `🥡 Work till ${info.shiftEnd}. The plan: walk in, get changed, start the home workout — before you sit down. No drive needed.`
+      : `🥡 Shift's done. Don't sit down yet — get changed and start. 10 minutes in, you'll want to finish.`;
+    return `<div class="card" style="border-color:var(--${accent});">${header}
+      <p class="hint">${msg}</p>
+      <div class="btn-row" style="flex-wrap:wrap;">
+        <button onclick="startTodaysWorkout('${key}','home')">▶ Start 🏠 Home Workout</button>
+        ${quickBtn('⚡ Just 10 min')}
+        <button class="secondary small" onclick="startTodaysWorkout('${key}','${info.session}')">🏋️ Gym: ${session.label}</button>
+      </div>${prLine}</div>`;
+  }
+  const afternoon = now.getHours() >= 12;
+  return `<div class="card" style="border-color:var(--${accent});">${header}
     ${afternoon && !isHome ? `<p class="hint">Can't be bothered with the drive? Skip the gym trip, not the workout — do it at home and it still counts for the week.</p>` : `<p class="hint">Everything's loaded with today's weights. Just press start.</p>`}
     <div class="btn-row" style="flex-wrap:wrap;">
       <button onclick="startTodaysWorkout('${key}','${info.session}')">▶ Start ${isHome?'workout':session.label}</button>
