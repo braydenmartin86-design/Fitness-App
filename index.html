@@ -234,6 +234,8 @@
   @media (max-width:640px){
     .grid-2{grid-template-columns:1fr;}
   }
+  @keyframes prPop{0%{transform:scale(.85);opacity:0}60%{transform:scale(1.04);opacity:1}100%{transform:scale(1)}}
+  .pr-pop{animation:prPop .45s ease-out;}
 </style>
 </head>
 <body>
@@ -1071,6 +1073,18 @@ function homeWorkoutPlan(person){
     {name:'Walking Pad Cool-Down', sets:1, reps:'5–10 min @ speed 3–4', restSec:0},
   ];
 }
+// "Just 10 minutes" version — for days when the full session feels like too much.
+// Getting started is the hard part; it still counts as the day's workout.
+const QUICK_SESSION_LABEL = '⚡ 10-Min Workout';
+function quickWorkoutPlan(){
+  return [
+    {name:'Jump Rope Warm-Up', sets:1, reps:'2 min easy', restSec:0, minutes:2},
+    {name:'DB Goblet Squat', sets:2, reps:'12', restSec:20},
+    {name:'DB Floor Press', sets:2, reps:'12', restSec:20},
+    {name:'Single-Arm DB Row', sets:2, reps:'12 / side', restSec:20},
+    {name:'Jump Rope Finisher', sets:1, reps:'3 rounds: 40s on / 20s off', restSec:0, minutes:3},
+  ];
+}
 // Broader library of cardio/activity types loggable individually — separate from the
 // treadmill/bike prescriptions baked into the auto-generated program.
 const CARDIO_LOG_NAMES = [
@@ -1566,9 +1580,49 @@ function renderDashboard(){
     <h1 class="page-title">Today</h1>
     <p class="page-sub">Both of you, side by side. Tap a card for the full plan.</p>
     <div class="sync-split">${half('p1','p1')}${half('p2','p2')}</div>
+    <div class="grid-2">${startWorkoutCardHTML('p1')}${startWorkoutCardHTML('p2')}</div>
     <div class="grid-2">${cardFor('p1')}${cardFor('p2')}</div>
     ${dashboardExpanded ? renderTodayPanel(dashboardExpanded) : ''}
   `;
+}
+// One-tap "start today's workout" — loads the session straight into the logger. After midday,
+// gym days also offer the home / 10-min version, since the drive is what kills afternoon sessions.
+function startWorkoutCardHTML(key){
+  const p = state.people[key];
+  const info = ensureWeekSchedule(key, getMondayOfWeek(new Date()))[todayDayLabel()];
+  const accent = key==='p1' ? 'p1' : 'p2';
+  const monthPRs = prsThisMonth(key).length;
+  const prLine = monthPRs ? `<p class="hint" style="margin-top:8px;">🏆 ${monthPRs} PR${monthPRs===1?'':'s'} this month — keep it going.</p>` : '';
+  const quickBtn = (text)=>`<button class="secondary small" onclick="startTodaysWorkout('${key}','quick')">${text}</button>`;
+  if(!info || !info.session){
+    return `<div class="card"><h3><span class="dot" style="background:var(--${accent})"></span>${p.name} — rest day</h3>
+      <p class="hint">Nothing planned today. Feeling it anyway?</p>
+      <div class="btn-row">${quickBtn('⚡ 10-min workout')}</div>${prLine}</div>`;
+  }
+  if(info.completed){
+    return `<div class="card"><h3><span class="dot" style="background:var(--${accent})"></span>${p.name} — ✅ today's workout done</h3>
+      <p class="hint">Nice work. Rest up and eat your protein.</p>${prLine}</div>`;
+  }
+  const isHome = info.session==='home';
+  const session = isHome ? {label:'🏠 Home Workout'} : getWeeklySplit(key).find(s=>s.id===info.session);
+  if(!session) return '';
+  const afternoon = new Date().getHours() >= 12;
+  return `<div class="card" style="border-color:var(--${accent});">
+    <h3><span class="dot" style="background:var(--${accent})"></span>${p.name} — today: ${session.label}</h3>
+    ${afternoon && !isHome ? `<p class="hint">Can't be bothered with the drive? Skip the gym trip, not the workout — do it at home and it still counts for the week.</p>` : `<p class="hint">Everything's loaded with today's weights. Just press start.</p>`}
+    <div class="btn-row" style="flex-wrap:wrap;">
+      <button onclick="startTodaysWorkout('${key}','${info.session}')">▶ Start ${isHome?'workout':session.label}</button>
+      ${afternoon && !isHome ? `<button class="secondary small" onclick="startTodaysWorkout('${key}','home')">🏠 Home instead</button>` : ''}
+      ${quickBtn('⚡ Just 10 min')}
+    </div>${prLine}</div>`;
+}
+function startTodaysWorkout(key, sessionId){
+  currentPerson = key;
+  sessionLogDate[key] = todayStr();
+  sessionAutoSuggestDone[key] = true;
+  goToTab('program');
+  pickLogSession(sessionId);
+  setTimeout(()=>{ const el = document.getElementById('log-session-card'); if(el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 50);
 }
 function toggleDashboardExpand(key){
   dashboardExpanded = (dashboardExpanded===key) ? null : key;
@@ -1949,6 +2003,7 @@ function renderProgram(){
     </div>
     ${week2Expanded ? `<div style="margin-top:12px;">${renderWeekBlockHTML(week2Start, 'Next week')}</div>` : ''}
     ${logSessionCardHTML}
+    ${buildSessionPRCardHTML()}
     ${buildSessionInsightCardHTML()}
     <div id="exercise-swap-sheet-root"></div>
     ${buildLogSingleExerciseCardHTML()}
@@ -3561,6 +3616,7 @@ let sessionAutoSuggestDone = {p1:false, p2:false}; // avoids re-forcing the sugg
 let sessionFeeling = {p1:null, p2:null};
 let sessionNotesText = {p1:'', p2:''};
 let lastSessionInsight = {p1:null, p2:null};
+let lastSessionPRs = {p1:[], p2:[]}; // PRs hit in the session just saved — shown as a celebration card
 const SESSION_FEELINGS = [
   {id:'easy', icon:'💪', label:'Too easy'},
   {id:'good', icon:'👍', label:'Just right'},
@@ -3630,7 +3686,8 @@ function getSessionOptionsForPerson(personKey, forDate){
   const person = state.people[personKey];
   const split = getWeeklySplit(personKey);
   const home = {id:'home', label:'🏠 Home Workout', exercises: homeWorkoutPlan(person)};
-  const options = [...split, home];
+  const quick = {id:'quick', label:QUICK_SESSION_LABEL, exercises: quickWorkoutPlan()};
+  const options = [...split, home, quick];
   // Also surface that week's planned Program-tab activities (Basketball, Golf, etc.) as
   // one-tap loggable entries, so logging isn't limited to strength sessions + Home Workout.
   const weekStart = getMondayOfWeek(forDate ? new Date(forDate+'T00:00:00') : new Date());
@@ -3700,7 +3757,7 @@ function pickLogSession(sessionId){
 }
 // Prefill: suggested/last-used weight (else the home default kg) and the TOP of the rep range.
 function defaultSetsFor(displayName, e){
-  if(isCardioLog(displayName)) return [{duration: HOME_CARDIO_DEFAULT_MIN[displayName] ?? '', distance:''}];
+  if(isCardioLog(displayName)) return [{duration: (displayName===e.name && e.minutes) || (HOME_CARDIO_DEFAULT_MIN[displayName] ?? ''), distance:''}];
   const suggestion = estimateWorkingWeight(currentPerson, displayName, e.reps);
   const repsTop = parseRepsTop(e.reps);
   const weight = suggestion ? suggestion.weight : (HOME_DEFAULT_KG[displayName] ?? '');
@@ -3793,6 +3850,9 @@ function saveFullSession(){
   // Record this session's date+type reliably, regardless of whether feedback was given —
   // this is what lets "previous session" lookups work every time, not just when a rating was left.
   state.sessionLog[currentPerson].push({id:uid(), date, sessionId: session.id, sessionLabel: session.label});
+  markScheduledDayDone(currentPerson, date, session.id);
+  const loggedNames = Object.keys(sessionLogSets).map(getDisplayExerciseName);
+  lastSessionPRs[currentPerson] = findPRs(currentPerson).filter(pr=>pr.date===date && loggedNames.includes(pr.exercise));
   const feeling = sessionFeeling[currentPerson];
   const notes = sessionNotesText[currentPerson];
   const feedbackPersonKey = currentPerson;
@@ -4017,6 +4077,52 @@ function buildLogSessionCardHTML(){
       ` : `<p class="hint" style="margin-top:10px;">Pick a session above and it'll pull in the exercises from your Program automatically, with weight already suggested.</p>`}
     </div>`;
 }
+// Saving a session ticks off that day in the calendar. Doing the Home or 10-min workout on a
+// gym day swaps the day to Home (it still counts toward the week) — skipping the drive beats skipping the session.
+function markScheduledDayDone(personKey, date, sessionId){
+  const {weekStart, label} = dateToWeekAndDay(date);
+  const info = ensureWeekSchedule(personKey, weekStart)[label];
+  if(!info || !info.session || info.completed) return;
+  if(sessionId===info.session) info.completed = true;
+  else if(sessionId==='home' || sessionId==='quick'){ info.session = 'home'; info.completed = true; }
+}
+// Walks each exercise's history in date order; a PR is a heavier top set than ever before,
+// or more reps at your heaviest weight. First-ever logs don't count (nothing to beat yet).
+function findPRs(personKey){
+  const best = {}, prs = [];
+  [...(state.workouts[personKey]||[])].filter(w=>!w.cardio && w.sets && w.sets.length).sort((a,b)=>a.date.localeCompare(b.date)).forEach(w=>{
+    const topWeight = Math.max(...w.sets.map(x=>+x.weight));
+    const topReps = Math.max(...w.sets.filter(x=>+x.weight===topWeight).map(x=>+x.reps));
+    const prev = best[w.exercise];
+    if(prev && (topWeight>prev.weight || (topWeight===prev.weight && topReps>prev.reps))){
+      prs.push({date:w.date, exercise:w.exercise, weight:topWeight, reps:topReps, prevWeight:prev.weight, prevReps:prev.reps});
+    }
+    if(!prev || topWeight>prev.weight || (topWeight===prev.weight && topReps>prev.reps)) best[w.exercise] = {weight:topWeight, reps:topReps};
+  });
+  return prs;
+}
+function prsThisMonth(personKey){
+  const month = todayStr().slice(0,7);
+  return findPRs(personKey).filter(pr=>pr.date.startsWith(month));
+}
+function prLineHTML(pr){
+  return `<strong>${pr.exercise}</strong> — ${pr.weight}kg × ${pr.reps} <span class="hint">(was ${pr.prevWeight}kg × ${pr.prevReps})</span>`;
+}
+function dismissSessionPRs(){ lastSessionPRs[currentPerson] = []; renderWorkouts(); }
+function buildSessionPRCardHTML(){
+  const prs = lastSessionPRs[currentPerson] || [];
+  if(!prs.length) return '';
+  const monthCount = prsThisMonth(currentPerson).length;
+  return `
+    <div class="card pr-pop" style="border:2px solid var(--warn);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <h3 style="margin:0;">🏆 New PR${prs.length>1?'s':''}! You're getting stronger.</h3>
+        <span class="del-x" onclick="dismissSessionPRs()">✕</span>
+      </div>
+      ${prs.map(pr=>`<p style="font-size:14px;margin:8px 0 0 0;">${prLineHTML(pr)}</p>`).join('')}
+      <p class="hint" style="margin-top:10px;">That's ${monthCount} PR${monthCount===1?'':'s'} this month 💪</p>
+    </div>`;
+}
 function buildSessionInsightCardHTML(){
   const insight = lastSessionInsight[currentPerson];
   if(!insight) return '';
@@ -4218,6 +4324,15 @@ function renderProgress(){
     <h1 class="page-title">Progress</h1>
     <p class="page-sub">Weight trend, forecast, progress per exercise, and your weekly training streak.</p>
     ${personToggleHTML(currentPerson,'setProgressPerson')}
+    ${(()=>{
+      const all = findPRs(currentPerson).reverse();
+      const month = prsThisMonth(currentPerson).length;
+      return `<div class="card">
+        <h3>🏆 Personal records</h3>
+        <p class="hint">${month} this month · ${all.length} all time. A PR is your heaviest top set yet, or more reps at your heaviest weight.</p>
+        ${all.length ? all.slice(0,12).map(pr=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;"><span>${prLineHTML(pr)}</span><span class="hint" style="white-space:nowrap;">${fmtDate(pr.date)}</span></div>`).join('') : `<div class="empty-state">No PRs yet — log the same exercise twice and beat it to get your first.</div>`}
+      </div>`;
+    })()}
     <div class="card">
       <h3>🗓 Weekly completion</h3>
       <p class="hint">Ticks green the moment every scheduled session/activity for that week is marked done in the Program tab.</p>
