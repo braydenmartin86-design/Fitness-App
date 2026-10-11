@@ -827,6 +827,10 @@ function estimateWorkingWeight(personKey, exerciseName, repsScheme){
   const bigLift = /squat|deadlift|hip thrust|leg press|row|bench|hack/i.test(exerciseName);
   const increment = bigLift ? 5 : 2.5;
   if(!readyToProgress) return {weight: maxWeight, source:'repeat'}; // echo back exactly what was lifted — no need to round
+  // Home gear is fixed (2x 15kg dumbbells, bands, bodyweight) — once you've hit the top of the
+  // rep range at the heaviest you've got, progress with reps/tempo/a harder variant instead.
+  const homeCap = HOME_DEFAULT_KG[exerciseName];
+  if(homeCap!==undefined && maxWeight+increment > homeCap) return {weight: maxWeight, source:'maxed'};
   return {weight: roundToPlate(maxWeight+increment), source:'progression'};
 }
 
@@ -1203,6 +1207,7 @@ function ensureWeekSchedule(personKey, weekStart){
   if(!state.schedule[personKey][weekStart]){
     const blank = DAY_LABELS.reduce((o,d)=>{o[d]={session:null, working:false, shiftStart:'', shiftEnd:'', trainTime:'', completed:false, activity:null, activityOther:'', activityDuration:null}; return o;},{});
     state.schedule[personKey][weekStart] = blank;
+    applyWeeklyActivities(personKey, blank);
     autoAssignSessions(personKey, blank); // sensible default spread — user can still move things
   } else {
     const wk = state.schedule[personKey][weekStart];
@@ -1223,12 +1228,30 @@ function autoAssignSessions(personKey, schedule){
   if(!n) return;
   // If work days are marked, put sessions on days off first (gym mornings are the easy win),
   // spilling onto work days only when there aren't enough days off.
-  const offIdx = DAY_LABELS.map((d,i)=>i).filter(i=>!schedule[DAY_LABELS[i]].working);
-  if(offIdx.length < 7){
-    const workIdx = DAY_LABELS.map((d,i)=>i).filter(i=>schedule[DAY_LABELS[i]].working);
+  const all = DAY_LABELS.map((d,i)=>i);
+  const hasWork = all.some(i=>schedule[DAY_LABELS[i]].working);
+  const hasActivity = all.some(i=>schedule[DAY_LABELS[i]].activity);
+  if(hasWork || hasActivity){
+    const tiers = [
+      all.filter(i=>!schedule[DAY_LABELS[i]].working && !schedule[DAY_LABELS[i]].activity),
+      all.filter(i=>!schedule[DAY_LABELS[i]].working && schedule[DAY_LABELS[i]].activity),
+      all.filter(i=>schedule[DAY_LABELS[i]].working && !schedule[DAY_LABELS[i]].activity),
+      all.filter(i=>schedule[DAY_LABELS[i]].working && schedule[DAY_LABELS[i]].activity),
+    ];
     const pickSpread = (pool, k) => Array.from({length:k}, (_,i)=>pool[Math.floor(i*pool.length/k)]);
-    const days = offIdx.length >= n ? pickSpread(offIdx, n) : [...offIdx, ...pickSpread(workIdx, n-offIdx.length)];
-    days.sort((a,b)=>a-b).forEach((idx,i)=>{ schedule[DAY_LABELS[idx]].session = split[i].id; });
+    let days = [];
+    tiers.forEach(t=>{ const need = n-days.length; if(need>0) days = days.concat(t.length<=need ? t : pickSpread(t, need)); });
+    days.sort((a,b)=>a-b);
+    const order = split.map(x=>x);
+    // Keep leg days off activity days (basketball etc.) when a non-leg session can swap in
+    const isLegs = x => /lower|legs/i.test(x.type||'');
+    days.forEach((idx,i)=>{
+      if(schedule[DAY_LABELS[idx]].activity && isLegs(order[i])){
+        const j = days.findIndex((idx2,k)=>!schedule[DAY_LABELS[idx2]].activity && !isLegs(order[k]));
+        if(j>=0){ const tmp=order[i]; order[i]=order[j]; order[j]=tmp; }
+      }
+    });
+    days.forEach((idx,i)=>{ schedule[DAY_LABELS[idx]].session = order[i].id; });
     return;
   }
   const usedIdx = new Set();
@@ -1427,7 +1450,7 @@ function suggestTrainingWindow(shiftStart, shiftEnd){
   if(s >= 12*60){
     return `Train this morning — aim to finish by ${minutesToTime(s-45)}, before your ${shiftStart} start.`;
   }
-  return `Early shift — train straight after you finish (from about ${minutesToTime(e)}), before you sit down. A home workout skips the gym drive and still counts.`;
+  return `Early shift — head to the gym straight after you finish (leave by about ${minutesToTime(e+15)}), before you sit down. If the gym's not happening, do the home workout instead.`;
 }
 function mealTimingForShift(shiftStart, shiftEnd){
   const s = timeToMinutes(shiftStart), e = timeToMinutes(shiftEnd);
@@ -1620,18 +1643,18 @@ function startWorkoutCardHTML(key){
   const nowMin = now.getHours()*60 + now.getMinutes();
   const shiftEndMin = info.working ? timeToMinutes(info.shiftEnd) : null;
   const header = `<h3><span class="dot" style="background:var(--${accent})"></span>${p.name} — today: ${session.label}</h3>`;
-  // Shift day: by the time work's done the gym drive is the barrier, so lead with home
-  // (no drive, ~same time as the round trip) and keep the gym as the secondary option.
+  // Gym is the priority; on work days (6–3, from home) the home workout is the fallback, not the default.
   if(info.working && !isHome){
+    const leaveBy = shiftEndMin!==null ? minutesToTime(shiftEndMin+15) : null;
     const msg = shiftEndMin!==null && nowMin < shiftEndMin
-      ? `🥡 Work till ${info.shiftEnd}. The plan: the moment you log off, get changed and start the home workout — straight from work to workout, before you hit the couch.`
-      : `🥡 Work's done. Close the laptop, get changed, start now — before you sit down. 10 minutes in, you'll want to finish.`;
+      ? `🥡 Work till ${info.shiftEnd}. Gym's the goal — pack your bag now and leave by ${leaveBy}. If it's really not happening, the home workout beats skipping.`
+      : `🥡 Work's done. Don't sit down — grab your bag and go. If the gym's not happening today, do the home workout instead of nothing.`;
     return `<div class="card" style="border-color:var(--${accent});">${header}
       <p class="hint">${msg}</p>
       <div class="btn-row" style="flex-wrap:wrap;">
-        <button onclick="startTodaysWorkout('${key}','home')">▶ Start 🏠 Home Workout</button>
+        <button onclick="startTodaysWorkout('${key}','${info.session}')">▶ Start ${session.label}</button>
+        <button class="secondary small" onclick="startTodaysWorkout('${key}','home')">🏠 Home instead</button>
         ${quickBtn('⚡ Just 10 min')}
-        <button class="secondary small" onclick="startTodaysWorkout('${key}','${info.session}')">🏋️ Gym: ${session.label}</button>
       </div>${prLine}</div>`;
   }
   const afternoon = now.getHours() >= 12;
@@ -2335,12 +2358,35 @@ function openDaySettingsSheet(weekStart, day){
           <label style="margin-top:10px;">Duration (minutes) — used to estimate extra calories burned</label>
           <input type="number" value="${info.activityDuration||getActivityDef(info.activity).defaultDuration}" onchange="setWorkInfo('${weekStart}','${day}','activityDuration',+this.value)">
           <p class="hint" style="margin-top:6px;">Adds roughly ${getActivityCalorieBonus(currentPerson, weekStart, day)} kcal to this day's target, and the extra goes mostly toward carbs.</p>
+          <label style="margin-top:10px;display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" style="width:auto;" ${(state.people[currentPerson].weeklyActivities||{})[day]?'checked':''} onchange="toggleWeeklyActivity('${weekStart}','${day}')"> 🔁 Every ${day}</label>
           <div class="btn-row"><button class="secondary small" onclick="clearDayActivity('${weekStart}','${day}');closeDaySettingsSheet();">✕ Remove activity</button></div>
           ` : ''}
           <div class="btn-row"><button onclick="closeDaySettingsSheet()">Done</button></div>
         </div>
       </div>
     </div>`;
+}
+// Activities marked "every week" (e.g. Monday night basketball) are stored per person and
+// dropped into each new week automatically.
+function applyWeeklyActivities(personKey, schedule){
+  const weekly = state.people[personKey].weeklyActivities || {};
+  Object.entries(weekly).forEach(([day, a])=>{
+    const info = schedule[day];
+    if(info && !info.activity){ info.activity = a.activity; info.activityOther = a.activityOther||''; info.activityDuration = a.activityDuration||null; }
+  });
+}
+function toggleWeeklyActivity(weekStart, day){
+  const p = state.people[currentPerson];
+  p.weeklyActivities = p.weeklyActivities || {};
+  const info = ensureWeekSchedule(currentPerson, weekStart)[day];
+  if(p.weeklyActivities[day]) delete p.weeklyActivities[day];
+  else if(info.activity){
+    p.weeklyActivities[day] = {activity:info.activity, activityOther:info.activityOther||'', activityDuration:info.activityDuration||null};
+    // also fill any already-created upcoming weeks
+    Object.entries(state.schedule[currentPerson]||{}).forEach(([ws, wk])=>{ if(ws>weekStart) applyWeeklyActivities(currentPerson, wk); });
+  }
+  save();
+  openDaySettingsSheet(weekStart, day);
 }
 function setActivityWithDefault(weekStart, day, value){
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
@@ -4079,6 +4125,7 @@ function buildLogSessionCardHTML(){
         </span>` : ''}
       </div>
       ${e.sets ? `<p class="hint">Target: ${e.sets}×${e.reps} ${flagBadges}</p>` : ''}
+      ${(!cardio && e.reps && (estimateWorkingWeight(currentPerson, displayName, e.reps)||{}).source==='maxed') ? `<p class="hint" style="color:var(--warn);">💪 You've outgrown this weight. Keep progressing: slow the lowering to 3 sec, pause at the bottom, add a set — or 🔄 swap to a harder variant.</p>` : ''}
       ${tipOpen ? `<p class="hint" style="background:var(--surface-alt);padding:8px 10px;border-radius:10px;margin-top:6px;">💡 ${getExerciseTip(displayName)}</p>` : ''}
       ${cardio ? `
       <div class="row" style="margin-top:8px;">
