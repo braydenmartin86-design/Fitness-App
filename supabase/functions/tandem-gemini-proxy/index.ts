@@ -1,7 +1,8 @@
 // TANDEM's Gemini proxy (Supabase Edge Function).
 // Keeps the Gemini key server-side and avoids browser CORS issues with Google's API.
 //
-// Request:  POST { prompt: string, json?: boolean, images?: [{ mimeType, data /* base64 */ }] }
+// Request:  POST { prompt: string, json?: boolean, images?: [{ mimeType, data /* base64 */ }],
+//                  thinkingBudget?: number /* 0 = answer straight away (much faster on 2.5 models) */ }
 // Response: { text, imagesReceived }  or  { error }
 //
 // Deploy:   supabase functions deploy tandem-gemini-proxy
@@ -30,7 +31,7 @@ Deno.serve(async (req) => {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return reply({ error: "GEMINI_API_KEY secret is not set on this function" }, 500);
 
-  let body: { prompt?: string; json?: boolean; images?: { mimeType?: string; data?: string }[] };
+  let body: { prompt?: string; json?: boolean; thinkingBudget?: number; images?: { mimeType?: string; data?: string }[] };
   try { body = await req.json(); } catch { return reply({ error: "Invalid JSON body" }, 400); }
   if (!body.prompt) return reply({ error: "Missing prompt" }, 400);
 
@@ -45,17 +46,30 @@ Deno.serve(async (req) => {
         ...images.map((i) => ({ inline_data: { mime_type: i.mimeType || "image/jpeg", data: i.data } })),
       ],
     }],
-    ...(body.json ? { generationConfig: { responseMimeType: "application/json" } } : {}),
   };
+  const generationConfig: Record<string, unknown> = {};
+  if (body.json) generationConfig.responseMimeType = "application/json";
+  const wantsThinkingBudget = typeof body.thinkingBudget === "number";
 
   let lastError = "";
   let lastStatus = 500;
-  for (const model of MODELS) {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+  const callModel = (model: string, withThinking: boolean) =>
+    fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        generationConfig: {
+          ...generationConfig,
+          ...(withThinking ? { thinkingConfig: { thinkingBudget: body.thinkingBudget } } : {}),
+        },
+      }),
     });
+
+  for (const model of MODELS) {
+    let res = await callModel(model, wantsThinkingBudget);
+    // Not every model accepts a custom thinking budget (or 0) — if it's rejected, just ask normally.
+    if (res.status === 400 && wantsThinkingBudget) res = await callModel(model, false);
     const raw = await res.text();
     if (res.ok) {
       let data;
