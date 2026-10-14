@@ -309,6 +309,7 @@ function defaultData(){
     sessionLog:{p1:[], p2:[]}, // {id, date, sessionId, sessionLabel} for EVERY saved session — reliable regardless of whether feedback was given
     aiQuotaExhaustedUntil: null, // shared, project-level Gemini quota — set/cleared automatically
     shoppingChecked:{p1:{}, p2:{}},
+    formChecks:{p1:{}, p2:{}}, // {exerciseName: {date, points:[...]}} — latest AI form review (text only, no video kept)
   };
 }
 let state = defaultData(); // safe synchronous placeholder — real data loads async below
@@ -342,7 +343,8 @@ function mergeWithDefaults(parsed){
     mealTracking:{...d.mealTracking, ...(parsed.mealTracking||{})},
     sessionFeedback:{...d.sessionFeedback, ...(parsed.sessionFeedback||{})},
     sessionLog:{...d.sessionLog, ...(parsed.sessionLog||{})},
-    shoppingChecked:{...d.shoppingChecked, ...(parsed.shoppingChecked||{})}};
+    shoppingChecked:{...d.shoppingChecked, ...(parsed.shoppingChecked||{})},
+    formChecks:{...d.formChecks, ...(parsed.formChecks||{})}};
 }
 function migrateDefaultNames(){
   if(state.people.p1 && state.people.p1.name==='Person 1') state.people.p1.name='Brayden';
@@ -519,7 +521,7 @@ async function callGemini(prompt, opts){
       'Authorization': `Bearer ${window.SUPABASE_ANON_KEY}`,
       'apikey': window.SUPABASE_ANON_KEY,
     },
-    body: JSON.stringify({ prompt, json: !!opts.json }),
+    body: JSON.stringify(opts.images ? { prompt, json: !!opts.json, images: opts.images } : { prompt, json: !!opts.json }),
   });
   const data = await res.json().catch(()=>null);
   if(!res.ok || !data){
@@ -527,6 +529,8 @@ async function callGemini(prompt, opts){
     throw new Error(`AI request failed: ${msg}`);
   }
   if(data.error) throw new Error(data.error);
+  // An older proxy silently drops images — never let the AI "review" a video it didn't see.
+  if(opts.images && data.imagesReceived !== opts.images.length) throw new Error('PROXY_NO_IMAGES');
   if(!data.text) throw new Error('Gemini returned an empty response');
   return data.text;
 }
@@ -558,6 +562,9 @@ function formatResetTime(isoString){
 }
 function friendlyAIError(message){
   const msg = message||'';
+  if(/PROXY_NO_IMAGES/.test(msg)){
+    return 'Your AI proxy can\u2019t receive video frames yet. Redeploy the updated Supabase function from supabase/functions/tandem-gemini-proxy in the repo, then try again.';
+  }
   if(/quota|billing/i.test(msg)){
     return `Your Gemini quota is used up for today \u2014 resets ${formatResetTime()} your time (that's midnight Pacific, always). Nothing to do but wait, retrying won\u2019t help before then.`;
   }
@@ -604,7 +611,7 @@ async function callGeminiBullets(prompt, onRetryStatus, opts){
   const count = opts.count || '3-5';
   const sentences = opts.sentences || '1-2';
   const fullPrompt = prompt + `\n\nReturn ONLY this exact JSON shape, nothing else, no markdown fences, no text before or after it: {"points": ["first point \u2014 ${sentences} sentences, clear and specific", "second point", "..."]}. Use ${count} points depending on how much there is to say \u2014 keep each point tight and to the point while still covering the genuinely important information. Don't pad with a filler point just to hit a count, and don't sacrifice the key substance for brevity \u2014 just cut the padding around it.`;
-  const raw = await callGeminiWithRetry(fullPrompt, {json:true}, onRetryStatus);
+  const raw = await callGeminiWithRetry(fullPrompt, opts.images ? {json:true, images:opts.images} : {json:true}, onRetryStatus);
   return parseBulletPoints(raw);
 }
 function parseBulletPoints(raw){
@@ -1023,13 +1030,13 @@ function getWeeklySplit(personKey){
     return {id: (type+'-'+counts[type]).replace(/\s/g,''), type, label, exercises};
   });
 }
-// Home equipment: 2x 15kg dumbbells, skipping rope, walking pad, resistance bands (incl. glute band).
+// Home equipment: 2x 15kg dumbbells, flat bench, skipping rope, walking pad, resistance bands (incl. glute band).
 // Weights live in HOME_DEFAULT_KG (prefilled into the kg box) rather than in exercise names, so
 // history stays on one name even if the dumbbells change. 0 = bodyweight/band.
 const HOME_DEFAULT_KG = {
   'DB Goblet Squat':15, 'DB Front Squat':30, 'DB Bulgarian Split Squat':30, 'DB Step-Up':30, 'Band Squat':0, 'Jump Squat':0,
   'Single-Arm DB Row':15, 'Bent-Over DB Row':30, 'Resistance Band Row':0, 'DB Renegade Row':30, 'DB Pullover':15,
-  'DB Floor Press':30, 'Push-Up':0, 'Deficit Push-Up':0, 'DB Floor Fly':30, 'Band Chest Press':0,
+  'DB Bench Press':30, 'Close-Grip DB Bench Press':30, 'DB Bench Fly':30, 'Bench Dip':0, 'DB Floor Press':30, 'Push-Up':0, 'Deficit Push-Up':0, 'DB Floor Fly':30, 'Band Chest Press':0,
   'DB Romanian Deadlift':30, 'Single-Leg DB RDL':15, 'DB Sumo Deadlift':15, 'DB Swing':15, 'Band Good Morning':0,
   'Glute Band Hip Thrust':0, 'DB Hip Thrust':15, 'Single-Leg Glute Bridge':0, 'Glute Band Kickback':0, 'Glute Band Lateral Walk':0,
   'DB Shoulder Press':30, 'DB Arnold Press':30, 'Pike Push-Up':0, 'DB Lateral Raise':15, 'Band Shoulder Press':0,
@@ -1043,14 +1050,14 @@ const HOME_DEFAULT_KG = {
 const HOME_EXERCISE_ALTS = {
   'DB Goblet Squat':['DB Front Squat','DB Bulgarian Split Squat','DB Step-Up','Band Squat','Jump Squat'],
   'Single-Arm DB Row':['Bent-Over DB Row','Resistance Band Row','DB Renegade Row','DB Pullover'],
-  'DB Floor Press':['Push-Up','Deficit Push-Up','DB Floor Fly','Band Chest Press'],
+  'DB Bench Press':['DB Floor Press','Close-Grip DB Bench Press','DB Bench Fly','Push-Up','Deficit Push-Up','Band Chest Press'],
   'DB Romanian Deadlift':['Single-Leg DB RDL','DB Sumo Deadlift','DB Swing','Band Good Morning'],
   'Glute Band Hip Thrust':['DB Hip Thrust','Single-Leg Glute Bridge','Glute Band Kickback','Glute Band Lateral Walk'],
   'DB Shoulder Press':['DB Arnold Press','Pike Push-Up','DB Lateral Raise','Band Shoulder Press'],
   'DB Reverse Lunge':['DB Walking Lunge','DB Bulgarian Split Squat','DB Lateral Lunge','DB Step-Up'],
   'Band Pull-Apart':['Band Face Pull','DB Rear Delt Fly','Band Rear Delt Fly'],
   'DB Hammer Curl':['DB Bicep Curl','Band Bicep Curl','DB Concentration Curl'],
-  'Band Overhead Tricep Extension':['DB Overhead Tricep Extension','DB Skull Crusher','Band Tricep Pushdown','Diamond Push-Up'],
+  'Band Overhead Tricep Extension':['DB Overhead Tricep Extension','DB Skull Crusher','Bench Dip','Band Tricep Pushdown','Diamond Push-Up'],
   'Plank':['Side Plank','Dead Bug','Mountain Climbers','DB Russian Twist','Bicycle Crunch'],
   'Walking Pad Warm-Up':['Jump Rope Warm-Up'],
   'Jump Rope Finisher':['Walking Pad Incline Walk','Walking Pad Intervals'],
@@ -1067,7 +1074,7 @@ function homeWorkoutPlan(person){
     {name:'Walking Pad Warm-Up', sets:1, reps:'5 min @ speed 3', restSec:0},
     {name:'DB Goblet Squat', sets: bump?4:3, reps:'10–12', restSec:75},
     {name:'Single-Arm DB Row', sets: bump?4:3, reps:'10–12 / side', restSec:60},
-    {name:'DB Floor Press', sets: bump?4:3, reps:'10–12', restSec:75},
+    {name:'DB Bench Press', sets: bump?4:3, reps:'10–12', restSec:75},
     {name:'DB Romanian Deadlift', sets:3, reps:'10–12', restSec:75},
     {name:'Glute Band Hip Thrust', sets:3, reps:'15–20', restSec:45},
     {name:'DB Shoulder Press', sets:3, reps:'6–10', restSec:75},
@@ -1087,7 +1094,7 @@ function quickWorkoutPlan(){
   return [
     {name:'Jump Rope Warm-Up', sets:1, reps:'2 min easy', restSec:0, minutes:2},
     {name:'DB Goblet Squat', sets:2, reps:'12', restSec:20},
-    {name:'DB Floor Press', sets:2, reps:'12', restSec:20},
+    {name:'DB Bench Press', sets:2, reps:'12', restSec:20},
     {name:'Single-Arm DB Row', sets:2, reps:'12 / side', restSec:20},
     {name:'Jump Rope Finisher', sets:1, reps:'3 rounds: 40s on / 20s off', restSec:0, minutes:3},
   ];
@@ -1139,7 +1146,15 @@ const EXTRA_EXERCISE_TIPS = {
   'Band Pull-Apart': 'Arms straight at shoulder height, pull the band to your chest by squeezing your shoulder blades together — balances out all the pressing.',
   'Jump Rope Finisher': 'Stay light on the balls of your feet and turn the rope with your wrists — push the pace on the \u201con\u201d intervals but keep the hops low and quiet. If you trip, just reset and keep going until the timer ends.',
   'DB Floor Press': 'Lie on the floor, lower until your upper arms lightly touch the ground, pause, then press — elbows at ~45° from your body, not flared out wide.',
-  'Single-Arm DB Row': 'Brace your free hand on a chair or knee, flat back, pull the dumbbell toward your hip rather than straight up to your shoulder.',
+  'Single-Arm DB Row': 'Knee and hand on the bench, flat back, pull the dumbbell toward your hip rather than straight up to your shoulder.',
+  'DB Bench Press': 'Feet planted, shoulder blades squeezed together into the bench, lower to the sides of your chest with elbows ~45°, then press up and slightly in.',
+  'Close-Grip DB Bench Press': 'Dumbbells touching, palms facing each other, elbows tucked close — lower to your lower chest. Hits triceps harder.',
+  'DB Bench Fly': 'Slight bend in the elbows the whole time, open wide until you feel a chest stretch, then hug the weights back together — don\u2019t turn it into a press.',
+  'Bench Dip': 'Hands on the bench edge, hips close to it, lower until elbows reach ~90°, then press up — stop short if your shoulders complain.',
+  'DB Bulgarian Split Squat': 'Rear foot laced on the bench, most weight on the front foot, drop straight down until the back knee nearly touches the floor.',
+  'DB Hip Thrust': 'Upper back on the bench edge, dumbbell on your hips, drive through your heels and squeeze your glutes hard at the top — chin tucked.',
+  'Glute Band Hip Thrust': 'Upper back on the bench edge, band just above the knees and push them out, drive through your heels and squeeze your glutes at the top.',
+  'DB Shoulder Press': 'Sit on the bench, core braced, press straight up from shoulder height without arching your lower back.',
   'DB Hammer Curl': 'Palms facing each other, elbows pinned to your sides, no swinging — drop the reps before you start using momentum.',
   'Kettlebell Swing': 'This is a hip hinge, not a squat — power comes from snapping your hips forward, not from your arms lifting the bell.',
 };
@@ -2019,7 +2034,7 @@ function renderWeekBlockHTML(weekStart, weekBadgeLabel){
     <div class="cal-week-head">
       <div>
         <div class="cal-week-range">${rangeLabel}<span class="cal-week-badge">${weekBadgeLabel}</span></div>
-        <p class="hint" style="margin-top:4px;">${scheduled} / ${split.length} sessions scheduled ${homeUsed?'· home workout used':'· 1 home workout swap available'}</p>
+        <p class="hint" style="margin-top:4px;">${scheduled} / ${split.length} sessions scheduled ${homeUsed?'· incl. home workout':'· home workouts count too'}</p>
         <div class="cal-week-dots">${dotsHTML}</div>
         <p class="hint" style="margin-top:8px;">🥡 Work days (tap to toggle):</p>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">${DAY_LABELS.map(day=>{
@@ -3853,7 +3868,8 @@ function pickLogSession(sessionId){
           if(previous){
             const candidates = [e.name, ...getExerciseSubstitutes(e.name)];
             const lastUsed = previous.exercises.find(pe=>candidates.includes(pe.exercise));
-            if(lastUsed && lastUsed.exercise !== e.name) sessionExerciseSwaps[e.name] = lastUsed.exercise;
+            // (Floor press was only ever the no-bench stand-in — don't auto-revert to it now there's a bench.)
+            if(lastUsed && lastUsed.exercise !== e.name && !(e.name==='DB Bench Press' && lastUsed.exercise==='DB Floor Press')) sessionExerciseSwaps[e.name] = lastUsed.exercise;
           }
           const displayName = getDisplayExerciseName(e.name);
           sessionLogSets[e.name] = defaultSetsFor(displayName, e);
@@ -3916,6 +3932,100 @@ function openExerciseSwapSheet(originalName){
             const sEsc = s.replace(/'/g,"\\'");
             return `<div class="sheet-item" style="${current===s?'color:var(--p1);':''}" onclick="substituteExercise('${esc}', '${sEsc}')">${s}</div>`;
           }).join('') : `<p class="hint">No listed alternatives for this one — try any machine that trains the same muscle group.</p>`}
+        </div>
+      </div>
+    </div>`;
+}
+/* ---- AI form check: video → still frames (on-device) → Gemini ---- */
+// The video never leaves the phone; ~10 evenly spaced frames are pulled out with a canvas and
+// only those small JPEGs are sent through the proxy. Only the text feedback is saved.
+let formCheck = null; // {exercise, status:'idle'|'extracting'|'analysing'|'done'|'error', frames, points, error, retryMsg}
+function openFormCheck(exercise){
+  formCheck = {exercise, status:'idle', frames:[], points:null, error:null};
+  renderFormCheckSheet();
+}
+function closeFormCheck(){ formCheck = null; const el=document.getElementById('exercise-swap-sheet-root'); if(el) el.innerHTML=''; }
+function extractVideoFrames(file, count, width){
+  return new Promise((resolve, reject)=>{
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.muted = true; video.playsInline = true; video.preload = 'auto'; video.src = url;
+    const fail = (msg)=>{ URL.revokeObjectURL(url); reject(new Error(msg)); };
+    video.onerror = ()=>fail('Couldn\u2019t read that video — try a shorter clip, or record it with your phone\u2019s normal camera.');
+    video.onloadedmetadata = async ()=>{
+      const dur = video.duration;
+      if(!dur || !isFinite(dur)) return fail('Couldn\u2019t work out the video length — try a different clip.');
+      try{ await video.play(); video.pause(); }catch(e){} // iOS needs a play() before frames will draw
+      const h = Math.round(width * (video.videoHeight||16) / (video.videoWidth||9));
+      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      const frames = [];
+      for(let i=0;i<count;i++){
+        const t = dur * (0.04 + 0.92 * i/(count-1));
+        await new Promise(r=>{ video.onseeked = r; video.currentTime = t; });
+        ctx.drawImage(video, 0, 0, width, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        frames.push({dataUrl, t, mimeType:'image/jpeg', data:dataUrl.split(',')[1]});
+      }
+      URL.revokeObjectURL(url);
+      resolve({frames, duration:dur});
+    };
+  });
+}
+async function onFormCheckVideo(input){
+  const file = input.files && input.files[0];
+  if(!file || !formCheck) return;
+  formCheck.status = 'extracting'; formCheck.error = null; formCheck.points = null; renderFormCheckSheet();
+  try{
+    const {frames, duration} = await extractVideoFrames(file, 10, 480);
+    formCheck.frames = frames; formCheck.duration = duration;
+    await runFormCheck();
+  }catch(e){
+    formCheck.status = 'error'; formCheck.error = e.message; renderFormCheckSheet();
+  }
+}
+async function runFormCheck(){
+  const fc = formCheck;
+  if(!fc || !fc.frames.length) return;
+  fc.status = 'analysing'; fc.error = null; fc.retryMsg = null; renderFormCheckSheet();
+  const p = state.people[currentPerson];
+  const prompt = `You are an experienced strength coach reviewing a client's exercise form. ${p.name} filmed a set of "${fc.exercise}". You are given ${fc.frames.length} still frames taken evenly across the ~${Math.round(fc.duration||0)}-second clip, in order.
+Standard coaching cues for this exercise: ${getExerciseTip(fc.exercise)}
+First, check the frames actually show someone doing ${fc.exercise} clearly enough to judge. If not (wrong exercise, body out of frame, too dark, bad angle), say so in the first point and explain exactly how to re-film (camera at hip height, side-on or 45°, whole body in frame) — and don't guess at their form.
+Otherwise: start with an overall verdict ("Solid", "Mostly good", "Needs work" or "Stop and fix this"), then what they're doing well, then the 1–3 most important fixes, each with the specific cue to use on the next set. Only comment on what you can actually see in the frames — tempo and bar speed can't be judged from stills, so don't. If anything looks like a real injury risk (e.g. rounded lower back under load, knees collapsing in, shoulders shrugging into the ears on presses), flag it plainly.`;
+  try{
+    const points = await callGeminiBullets(prompt, (msg)=>{ if(formCheck===fc){ fc.retryMsg = msg; renderFormCheckSheet(); } }, {images: fc.frames.map(f=>({mimeType:f.mimeType, data:f.data})), count:'3-6'});
+    fc.points = points; fc.status = 'done';
+    state.formChecks[currentPerson] = state.formChecks[currentPerson] || {};
+    state.formChecks[currentPerson][fc.exercise] = {date: todayStr(), points};
+    save();
+  }catch(e){
+    fc.status = 'error'; fc.error = friendlyAIError(e.message);
+  }
+  if(formCheck===fc) renderFormCheckSheet();
+}
+function renderFormCheckSheet(){
+  const fc = formCheck;
+  const root = document.getElementById('exercise-swap-sheet-root');
+  if(!fc || !root) return;
+  const last = (state.formChecks[currentPerson]||{})[fc.exercise];
+  const busy = fc.status==='extracting' || fc.status==='analysing';
+  root.innerHTML = `
+    <div class="more-sheet-overlay" onclick="if(event.target===this) closeFormCheck()">
+      <div class="more-sheet">
+        <div class="sheet-handle"></div>
+        <div style="padding:0 16px 16px 16px;max-height:75vh;overflow-y:auto;">
+          <h3 style="margin:0 0 4px 0;">🎥 Form check — ${fc.exercise}</h3>
+          <p class="hint">Film one set side-on (or at 45°), phone at hip height, whole body in frame. Under 30 seconds is plenty. The video stays on your phone — only 10 still frames are sent to the AI.</p>
+          ${!busy ? `<label class="secondary small" style="display:inline-block;margin-top:10px;padding:9px 14px;border-radius:12px;border:1px solid var(--border);cursor:pointer;">${fc.frames.length?'Choose another video':'📹 Record or choose a video'}<input type="file" accept="video/*" style="display:none;" onchange="onFormCheckVideo(this)"></label>` : ''}
+          ${fc.status==='extracting' ? `<p class="hint" style="margin-top:10px;">Pulling frames out of the video…</p>` : ''}
+          ${fc.status==='analysing' ? `<p class="hint" style="margin-top:10px;">${fc.retryMsg || '🤖 Coach is reviewing your form…'}</p>` : ''}
+          ${fc.frames.length ? `<div style="display:flex;gap:4px;overflow-x:auto;margin-top:10px;">${fc.frames.map(f=>`<img src="${f.dataUrl}" style="height:72px;border-radius:6px;flex:none;">`).join('')}</div>` : ''}
+          ${fc.status==='error' ? `<p class="hint" style="margin-top:10px;color:var(--danger);">⚠ ${fc.error}</p>${fc.frames.length?`<div class="btn-row"><button class="secondary small" onclick="runFormCheck()">↻ Try again</button></div>`:''}` : ''}
+          ${fc.status==='done' ? `<div style="margin-top:12px;">${renderBulletPoints(fc.points)}</div>` : ''}
+          ${fc.status!=='done' && last ? `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);"><p class="hint">Last check — ${fmtDate(last.date)}</p>${renderBulletPoints(last.points)}</div>` : ''}
+          <p class="hint" style="margin-top:12px;">AI feedback from still frames — a guide, not a replacement for a coach. If something hurts, stop.</p>
+          <div class="btn-row"><button onclick="closeFormCheck()">Done</button></div>
         </div>
       </div>
     </div>`;
@@ -4131,6 +4241,7 @@ function buildLogSessionCardHTML(){
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <strong style="font-size:14px;cursor:pointer;" onclick="toggleSessionTip('${escOrig}')">${displayName}${isSwapped?` <span class="hint" style="font-weight:400;">(was ${e.name})</span>`:''} <span style="color:var(--p1);font-size:12px;">${tipOpen?'▲':'ⓘ tap for cues'}</span></strong>
         ${!chosenSession.isActivity ? `<span style="display:flex;gap:10px;align-items:center;">
+          ${!cardio ? `<span style="cursor:pointer;color:var(--muted);font-size:13px;" onclick="openFormCheck('${displayName.replace(/'/g,"\\'")}')" title="AI form check from a video">🎥</span>` : ''}
           <span style="cursor:pointer;color:var(--muted);font-size:13px;" onclick="openExerciseSwapSheet('${escOrig}')" title="Substitute this exercise">🔄</span>
           <span class="del-x" onclick="removeSessionExercise('${escOrig}')" title="Remove from this session">✕</span>
         </span>` : ''}
@@ -4372,14 +4483,14 @@ function countCompletedByType(personKey, weekStart){
 }
 function isStreakWorthyWeek(personKey, weekStart){
   // A streak week needs a genuine full training week, not just "whatever was scheduled got done":
-  // all N gym sessions, or (N-1) gym + 1 Home Workout, or (N-1) gym + 2 recreational activities
-  // (basketball, golf, pilates, etc). N is that person's own days/week target.
+  // N strength sessions (gym or Home Workout — both count the same), or (N-1) strength sessions
+  // + 2 recreational activities (basketball, golf, pilates, etc). N is that person's own days/week target.
   const person = state.people[personKey];
   const N = Math.min(6, Math.max(3, +person.daysPerWeek || 3));
   const {gym, home, recreational} = countCompletedByType(personKey, weekStart);
-  if(gym >= N) return true;
-  if(gym >= N-1 && home >= 1) return true;
-  if(gym >= N-1 && recreational >= 2) return true;
+  const strength = gym + home;
+  if(strength >= N) return true;
+  if(strength >= N-1 && recreational >= 2) return true;
   return false;
 }
 function computeWeekStreak(personKey){
