@@ -24,7 +24,21 @@ const MAX_IMAGE_B64 = 2_000_000; // ~1.5MB per frame — the app sends ~40KB JPE
 const reply = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
+// Supabase kills a function at ~150s with a bare error (no CORS headers), which the browser
+// can only report as "Load failed". Give Gemini 120s, then answer with a readable error instead.
+const GEMINI_TIMEOUT_MS = 120_000;
+
 Deno.serve(async (req) => {
+  try {
+    return await handle(req);
+  } catch (e) {
+    // Any unexpected crash still goes back with CORS headers so the app can show what happened.
+    const msg = e instanceof Error ? e.message : String(e);
+    return reply({ error: /abort|timed out/i.test(msg) ? "Gemini took too long to answer (timed out after 120s)" : `Proxy error: ${msg}` }, 504);
+  }
+});
+
+async function handle(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return reply({ error: "Use POST" }, 405);
 
@@ -57,6 +71,7 @@ Deno.serve(async (req) => {
     fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
       body: JSON.stringify({
         ...payload,
         generationConfig: {
@@ -84,4 +99,4 @@ Deno.serve(async (req) => {
     if (!(res.status === 503 || /UNAVAILABLE|high demand|overloaded/i.test(raw))) break;
   }
   return reply({ error: lastError }, lastStatus);
-});
+}

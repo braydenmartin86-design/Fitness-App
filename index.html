@@ -517,7 +517,8 @@ async function callGemini(prompt, opts){
   const url = `${window.SUPABASE_URL}/functions/v1/tandem-gemini-proxy`;
   // A request can hang forever after a phone sleeps or during an outage — cap it.
   const controller = new AbortController();
-  const timer = setTimeout(()=>controller.abort(), opts.images ? 90000 : 45000);
+  const timeoutMs = opts.timeoutMs || (opts.images ? 110000 : 45000);
+  const timer = setTimeout(()=>controller.abort(), timeoutMs);
   let res;
   try{
   res = await fetch(url, {
@@ -531,7 +532,7 @@ async function callGemini(prompt, opts){
     body: JSON.stringify({ prompt, json: !!opts.json, ...(opts.images ? {images: opts.images} : {}), ...(opts.thinkingBudget!=null ? {thinkingBudget: opts.thinkingBudget} : {}) }),
   });
   }catch(e){
-    throw new Error(e.name==='AbortError' ? 'AI request timed out (network)' : `AI request failed: ${e.message}`);
+    throw new Error(e.name==='AbortError' ? `AI request timed out after ${Math.round(timeoutMs/1000)}s (network)` : `AI request failed: ${e.message}`);
   }finally{ clearTimeout(timer); }
   const data = await res.json().catch(()=>null);
   if(!res.ok || !data){
@@ -3997,6 +3998,20 @@ function extractVideoFrames(file, count, width){
     };
   });
 }
+// When a form check can't get through, send a tiny text-only request to tell the cases apart:
+// Supabase/AI unreachable vs. reachable-but-the-video-request-is-the-problem.
+async function diagnoseFormCheckFailure(originalMessage){
+  const timedOut = /timed out/i.test(originalMessage||'');
+  let textWorks = false;
+  try{ await callGemini('Reply with the single word OK.', {timeoutMs: 20000}); textWorks = true; }catch(e){}
+  if(!textWorks){
+    return 'Can\u2019t reach your AI server at all right now — other AI features won\u2019t work either. That\u2019s Supabase (or your internet), not the video. Check status.supabase.com and try again later.';
+  }
+  if(timedOut){
+    return 'The AI is working, but reviewing the video took too long and was cut off. Redeploy the AI proxy to get the speed-up (supabase functions deploy tandem-gemini-proxy), or try a shorter clip.';
+  }
+  return 'The AI works for text, but the video request failed on the server. Redeploy the AI proxy (supabase functions deploy tandem-gemini-proxy). If it still fails after that, the error was: \u201c' + (originalMessage||'') + '\u201d.';
+}
 function retryStalledFormCheck(){ if(formCheck) formCheck.stalled = false; const job = loadPendingFormCheck(); if(job) sendFormCheck(job); }
 function cancelStalledFormCheck(){ clearPendingFormCheck(); if(formCheck){ formCheck.stalled=false; formCheck.status='idle'; formCheck.error=null; renderFormCheckSheet(); } renderFormCheckBanner(); }
 async function onFormCheckVideo(input){
@@ -4060,7 +4075,8 @@ Otherwise: start with an overall verdict ("Solid", "Mostly good", "Needs work" o
     job.sentAt = Date.now();
     const ticker = setInterval(()=>{ if(formCheckInFlight===job && viewing() && formCheck.status==='analysing') renderFormCheckSheet(); else clearInterval(ticker); }, 5000);
     // Hard 2-minute ceiling on the whole thing (retries included) so it can never spin forever.
-    const deadline = new Promise((_,reject)=>setTimeout(()=>reject(new Error('AI request timed out (network)')), 120000));
+    // (Supabase cuts edge functions off at ~150s anyway.)
+    const deadline = new Promise((_,reject)=>setTimeout(()=>reject(new Error('AI request timed out after 150s (network)')), 150000));
     const points = await Promise.race([
       callGeminiBullets(prompt, (msg)=>{ if(viewing()){ formCheck.retryMsg = msg; renderFormCheckSheet(); } }, {images: fc.frames, count:'3-6', thinkingBudget: 0, maxAttempts: 2}),
       deadline,
@@ -4077,7 +4093,13 @@ Otherwise: start with an overall verdict ("Solid", "Mostly good", "Needs work" o
     // Connection drops (locked screen, outage) stay saved so they can be re-sent — up to 3 tries.
     const networkish = /Failed to fetch|NetworkError|Load failed|network|timed out/i.test(e.message||'');
     if(!networkish || job.attempts >= 3) clearPendingFormCheck();
-    if(viewing()){ formCheck.status = 'error'; formCheck.error = friendlyAIError(e.message); formCheck.stalled = networkish && job.attempts < 3; }
+    let message = friendlyAIError(e.message);
+    if(networkish){
+      if(viewing()){ formCheck.retryMsg = '🔎 That didn\u2019t go through — checking what\u2019s wrong…'; renderFormCheckSheet(); }
+      message = await diagnoseFormCheckFailure(e.message);
+    }
+    if(formCheckInFlight!==job) return; // cancelled while diagnosing
+    if(viewing()){ formCheck.status = 'error'; formCheck.error = message; formCheck.stalled = networkish && job.attempts < 3; }
   }
   formCheckInFlight = null;
   holdWakeLock(false);
