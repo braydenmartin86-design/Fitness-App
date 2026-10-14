@@ -594,7 +594,7 @@ function friendlyAIError(message){
 async function callGeminiWithRetry(prompt, opts, onRetryStatus){
   // Gemini's "high demand" 503s usually clear within ~30s, so back off progressively
   // (3s, 8s, 15s + a little jitter) rather than hammering it three times in 7 seconds.
-  const maxAttempts = 4;
+  const maxAttempts = (opts && opts.maxAttempts) || 4;
   const backoffMs = [3000, 8000, 15000];
   let lastError;
   for(let attempt=1; attempt<=maxAttempts; attempt++){
@@ -627,7 +627,7 @@ async function callGeminiBullets(prompt, onRetryStatus, opts){
   const count = opts.count || '3-5';
   const sentences = opts.sentences || '1-2';
   const fullPrompt = prompt + `\n\nReturn ONLY this exact JSON shape, nothing else, no markdown fences, no text before or after it: {"points": ["first point \u2014 ${sentences} sentences, clear and specific", "second point", "..."]}. Use ${count} points depending on how much there is to say \u2014 keep each point tight and to the point while still covering the genuinely important information. Don't pad with a filler point just to hit a count, and don't sacrifice the key substance for brevity \u2014 just cut the padding around it.`;
-  const raw = await callGeminiWithRetry(fullPrompt, {json:true, images:opts.images, thinkingBudget:opts.thinkingBudget}, onRetryStatus);
+  const raw = await callGeminiWithRetry(fullPrompt, {json:true, images:opts.images, thinkingBudget:opts.thinkingBudget, maxAttempts:opts.maxAttempts}, onRetryStatus);
   return parseBulletPoints(raw);
 }
 function parseBulletPoints(raw){
@@ -4057,7 +4057,14 @@ Standard coaching cues for this exercise: ${getExerciseTip(fc.exercise)}
 First, check the frames actually show someone doing ${fc.exercise} clearly enough to judge. If not (wrong exercise, body out of frame, too dark, bad angle), say so in the first point and explain exactly how to re-film (camera at hip height, side-on or 45°, whole body in frame) — and don't guess at their form.
 Otherwise: start with an overall verdict ("Solid", "Mostly good", "Needs work" or "Stop and fix this"), then what they're doing well, then the 1–3 most important fixes, each with the specific cue to use on the next set. Only comment on what you can actually see in the frames — tempo and bar speed can't be judged from stills, so don't. If anything looks like a real injury risk (e.g. rounded lower back under load, knees collapsing in, shoulders shrugging into the ears on presses), flag it plainly.`;
   try{
-    const points = await callGeminiBullets(prompt, (msg)=>{ if(viewing()){ formCheck.retryMsg = msg; renderFormCheckSheet(); } }, {images: fc.frames, count:'3-6', thinkingBudget: 0});
+    job.sentAt = Date.now();
+    const ticker = setInterval(()=>{ if(formCheckInFlight===job && viewing() && formCheck.status==='analysing') renderFormCheckSheet(); else clearInterval(ticker); }, 5000);
+    // Hard 2-minute ceiling on the whole thing (retries included) so it can never spin forever.
+    const deadline = new Promise((_,reject)=>setTimeout(()=>reject(new Error('AI request timed out (network)')), 120000));
+    const points = await Promise.race([
+      callGeminiBullets(prompt, (msg)=>{ if(viewing()){ formCheck.retryMsg = msg; renderFormCheckSheet(); } }, {images: fc.frames, count:'3-6', thinkingBudget: 0, maxAttempts: 2}),
+      deadline,
+    ]).finally(()=>clearInterval(ticker));
     if(formCheckInFlight!==job) return; // superseded by a resend after the phone woke up
     state.formChecks[job.personKey] = state.formChecks[job.personKey] || {};
     state.formChecks[job.personKey][job.exercise] = {date: todayStr(), points, unread: !viewing()};
@@ -4088,11 +4095,24 @@ function renderFormCheckBanner(){
   let html = '';
   if(pending && !sheetOpen) html = formCheckInFlight ? `🎥 Checking your ${pending.exercise} form…` : `🎥 ${pending.exercise} form check didn\u2019t finish — tap to retry`;
   else if(unread.length && !sheetOpen) html = `🎥 ${unread[0].ex} form check ready — tap to view`;
-  el.innerHTML = html ? `<div onclick="openLatestFormCheck()" style="position:fixed;left:12px;right:12px;bottom:84px;z-index:50;background:var(--surface);border:1px solid var(--p1);border-radius:14px;padding:11px 14px;font-size:13px;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.4);cursor:pointer;">${html}</div>` : '';
+  const closeX = pending ? `<span onclick="event.stopPropagation();cancelFormCheck()" title="Cancel" style="padding:0 4px 0 12px;color:var(--muted);">✕</span>` : `<span onclick="event.stopPropagation();markFormChecksRead()" title="Dismiss" style="padding:0 4px 0 12px;color:var(--muted);">✕</span>`;
+  el.innerHTML = html ? `<div onclick="openLatestFormCheck()" style="position:fixed;left:12px;right:12px;bottom:84px;z-index:50;display:flex;justify-content:space-between;align-items:center;background:var(--surface);border:1px solid var(--p1);border-radius:14px;padding:11px 14px;font-size:13px;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.4);cursor:pointer;"><span>${html}</span>${closeX}</div>` : '';
+}
+// Always a way out: stops waiting on the current request (any late reply is ignored) and forgets the job.
+function cancelFormCheck(){
+  formCheckInFlight = null;
+  clearPendingFormCheck();
+  holdWakeLock(false);
+  if(formCheck){ formCheck.status = 'idle'; formCheck.stalled = false; formCheck.error = null; formCheck.retryMsg = null; renderFormCheckSheet(); }
+  renderFormCheckBanner();
+}
+function markFormChecksRead(){
+  ['p1','p2'].forEach(k=>Object.values(state.formChecks[k]||{}).forEach(v=>{ v.unread = false; }));
+  save(); renderFormCheckBanner();
 }
 function openLatestFormCheck(){
   const pending = formCheckInFlight || loadPendingFormCheck();
-  if(pending){ currentPerson = pending.personKey; openFormCheck(pending.exercise); formCheck.status='analysing'; renderFormCheckSheet(); return; }
+  if(pending){ currentPerson = pending.personKey; openFormCheck(pending.exercise); return; } // openFormCheck picks analysing vs. stalled
   for(const k of ['p1','p2']){
     const hit = Object.entries(state.formChecks[k]||{}).find(([ex,v])=>v.unread);
     if(hit){ currentPerson = k; openFormCheck(hit[0]); return; }
@@ -4113,7 +4133,8 @@ function renderFormCheckSheet(){
           <p class="hint">Film one set side-on (or at 45°), phone at hip height, whole body in frame. Under 30 seconds is plenty. The video stays on your phone — only 8 still frames are sent to the AI. You can close this or lock your phone — it carries on when you're back, and results are saved under Progress → Form checks.</p>
           ${!busy ? `<label class="secondary small" style="display:inline-block;margin-top:10px;padding:9px 14px;border-radius:12px;border:1px solid var(--border);cursor:pointer;">${fc.frames.length?'Choose another video':'📹 Record or choose a video'}<input type="file" accept="video/*" style="display:none;" onchange="onFormCheckVideo(this)"></label>` : ''}
           ${fc.status==='extracting' ? `<p class="hint" style="margin-top:10px;">Pulling frames out of the video…</p>` : ''}
-          ${fc.status==='analysing' ? `<p class="hint" style="margin-top:10px;">${fc.retryMsg || '🤖 Coach is reviewing your form…'}</p>` : ''}
+          ${fc.status==='analysing' ? `<p class="hint" style="margin-top:10px;">${fc.retryMsg || '🤖 Coach is reviewing your form…'}${formCheckInFlight&&formCheckInFlight.sentAt?` (${Math.round((Date.now()-formCheckInFlight.sentAt)/1000)}s — usually 10–40s)`:''}</p>
+          <div class="btn-row"><button class="secondary small" onclick="cancelFormCheck()">✕ Cancel</button></div>` : ''}
           ${fc.frames.length ? `<div style="display:flex;gap:4px;overflow-x:auto;margin-top:10px;">${fc.frames.map(f=>`<img src="${f.dataUrl}" style="height:72px;border-radius:6px;flex:none;">`).join('')}</div>` : ''}
           ${fc.status==='error' ? `<p class="hint" style="margin-top:10px;color:var(--danger);">⚠ ${fc.error}</p>${fc.stalled?`<div class="btn-row"><button class="secondary small" onclick="retryStalledFormCheck()">↻ Send it again</button><button class="secondary small" onclick="cancelStalledFormCheck()">✕ Discard</button></div>`:fc.frames.length?`<div class="btn-row"><button class="secondary small" onclick="runFormCheck()">↻ Try again</button></div>`:''}` : ''}
           ${fc.status==='done' ? `<div style="margin-top:12px;">${renderBulletPoints(fc.points)}</div>` : ''}
