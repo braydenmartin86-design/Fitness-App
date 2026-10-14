@@ -515,7 +515,13 @@ async function callGemini(prompt, opts){
   // might use) — that way redeploying or changing anything about TANDEM's AI setup can never
   // affect another app, and vice versa. Each has its own function name and its own key/quota.
   const url = `${window.SUPABASE_URL}/functions/v1/tandem-gemini-proxy`;
-  const res = await fetch(url, {
+  // A request can hang forever after a phone sleeps or during an outage — cap it.
+  const controller = new AbortController();
+  const timer = setTimeout(()=>controller.abort(), opts.images ? 90000 : 45000);
+  let res;
+  try{
+  res = await fetch(url, {
+    signal: controller.signal,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -524,6 +530,9 @@ async function callGemini(prompt, opts){
     },
     body: JSON.stringify({ prompt, json: !!opts.json, ...(opts.images ? {images: opts.images} : {}), ...(opts.thinkingBudget!=null ? {thinkingBudget: opts.thinkingBudget} : {}) }),
   });
+  }catch(e){
+    throw new Error(e.name==='AbortError' ? 'AI request timed out (network)' : `AI request failed: ${e.message}`);
+  }finally{ clearTimeout(timer); }
   const data = await res.json().catch(()=>null);
   if(!res.ok || !data){
     const msg = (data && data.error) || `HTTP ${res.status}`;
@@ -568,6 +577,12 @@ function friendlyAIError(message){
   }
   if(/quota|billing/i.test(msg)){
     return `Your Gemini quota is used up for today \u2014 resets ${formatResetTime()} your time (that's midnight Pacific, always). Nothing to do but wait, retrying won\u2019t help before then.`;
+  }
+  if(/timed out|Failed to fetch|NetworkError|Load failed/i.test(msg)){
+    return 'Couldn\u2019t reach the AI (connection dropped, or Supabase/Gemini is having issues). Check status.supabase.com, then try again.';
+  }
+  if(/HTTP 5\d\d|HTTP 404/i.test(msg)){
+    return `The AI server didn\u2019t respond properly (${(msg.match(/HTTP \d+/)||[''])[0]}) — usually a Supabase outage or the function needs redeploying. Try again shortly.`;
   }
   if(/503|UNAVAILABLE|high demand|overloaded/i.test(msg)){
     return 'Gemini is overloaded right now and retrying didn\u2019t get through. Worth trying again in a minute or two.';
@@ -3946,7 +3961,11 @@ function openFormCheck(exercise){
   const last = (state.formChecks[currentPerson]||{})[exercise];
   if(last && last.unread){ last.unread = false; save(); }
   const pending = formCheckInFlight || loadPendingFormCheck();
-  if(pending && pending.exercise===exercise && pending.personKey===currentPerson) formCheck.status = 'analysing';
+  if(pending && pending.exercise===exercise && pending.personKey===currentPerson){
+    formCheck.status = formCheckInFlight ? 'analysing' : 'error';
+    if(!formCheckInFlight) formCheck.error = 'Your last check for this exercise didn\u2019t finish — the connection dropped.';
+    formCheck.stalled = !formCheckInFlight;
+  }
   renderFormCheckSheet();
   renderFormCheckBanner();
 }
@@ -3978,9 +3997,13 @@ function extractVideoFrames(file, count, width){
     };
   });
 }
+function retryStalledFormCheck(){ if(formCheck) formCheck.stalled = false; const job = loadPendingFormCheck(); if(job) sendFormCheck(job); }
+function cancelStalledFormCheck(){ clearPendingFormCheck(); if(formCheck){ formCheck.stalled=false; formCheck.status='idle'; formCheck.error=null; renderFormCheckSheet(); } renderFormCheckBanner(); }
 async function onFormCheckVideo(input){
   const file = input.files && input.files[0];
   if(!file || !formCheck) return;
+  if(!formCheckInFlight) clearPendingFormCheck(); // a new video replaces any stuck check
+  formCheck.stalled = false;
   formCheck.status = 'extracting'; formCheck.error = null; formCheck.points = null; renderFormCheckSheet();
   try{
     const {frames, duration} = await extractVideoFrames(file, 8, 384);
@@ -4020,6 +4043,8 @@ async function runFormCheck(){
   await sendFormCheck(job);
 }
 async function sendFormCheck(job){
+  job.attempts = (job.attempts||0) + 1;
+  savePendingFormCheck(job);
   formCheckInFlight = job;
   const viewing = ()=> formCheck && formCheck.exercise===job.exercise;
   if(viewing()){ formCheck.status = 'analysing'; formCheck.error = null; formCheck.retryMsg = null; renderFormCheckSheet(); }
@@ -4042,8 +4067,10 @@ Otherwise: start with an overall verdict ("Solid", "Mostly good", "Needs work" o
   }catch(e){
     if(formCheckInFlight!==job) return;
     // Network drops from a locked screen stay pending and get re-sent on wake; real errors don't.
-    if(!/Failed to fetch|NetworkError|Load failed|network/i.test(e.message||'')) clearPendingFormCheck();
-    if(viewing()){ formCheck.status = 'error'; formCheck.error = friendlyAIError(e.message); }
+    // Connection drops (locked screen, outage) stay saved so they can be re-sent — up to 3 tries.
+    const networkish = /Failed to fetch|NetworkError|Load failed|network|timed out/i.test(e.message||'');
+    if(!networkish || job.attempts >= 3) clearPendingFormCheck();
+    if(viewing()){ formCheck.status = 'error'; formCheck.error = friendlyAIError(e.message); formCheck.stalled = networkish && job.attempts < 3; }
   }
   formCheckInFlight = null;
   holdWakeLock(false);
@@ -4059,7 +4086,7 @@ function renderFormCheckBanner(){
   ['p1','p2'].forEach(k=>Object.entries(state.formChecks[k]||{}).forEach(([ex,v])=>{ if(v.unread) unread.push({k, ex}); }));
   const sheetOpen = !!formCheck;
   let html = '';
-  if(pending && !sheetOpen) html = `🎥 Checking your ${pending.exercise} form…`;
+  if(pending && !sheetOpen) html = formCheckInFlight ? `🎥 Checking your ${pending.exercise} form…` : `🎥 ${pending.exercise} form check didn\u2019t finish — tap to retry`;
   else if(unread.length && !sheetOpen) html = `🎥 ${unread[0].ex} form check ready — tap to view`;
   el.innerHTML = html ? `<div onclick="openLatestFormCheck()" style="position:fixed;left:12px;right:12px;bottom:84px;z-index:50;background:var(--surface);border:1px solid var(--p1);border-radius:14px;padding:11px 14px;font-size:13px;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.4);cursor:pointer;">${html}</div>` : '';
 }
@@ -4088,7 +4115,7 @@ function renderFormCheckSheet(){
           ${fc.status==='extracting' ? `<p class="hint" style="margin-top:10px;">Pulling frames out of the video…</p>` : ''}
           ${fc.status==='analysing' ? `<p class="hint" style="margin-top:10px;">${fc.retryMsg || '🤖 Coach is reviewing your form…'}</p>` : ''}
           ${fc.frames.length ? `<div style="display:flex;gap:4px;overflow-x:auto;margin-top:10px;">${fc.frames.map(f=>`<img src="${f.dataUrl}" style="height:72px;border-radius:6px;flex:none;">`).join('')}</div>` : ''}
-          ${fc.status==='error' ? `<p class="hint" style="margin-top:10px;color:var(--danger);">⚠ ${fc.error}</p>${fc.frames.length?`<div class="btn-row"><button class="secondary small" onclick="runFormCheck()">↻ Try again</button></div>`:''}` : ''}
+          ${fc.status==='error' ? `<p class="hint" style="margin-top:10px;color:var(--danger);">⚠ ${fc.error}</p>${fc.stalled?`<div class="btn-row"><button class="secondary small" onclick="retryStalledFormCheck()">↻ Send it again</button><button class="secondary small" onclick="cancelStalledFormCheck()">✕ Discard</button></div>`:fc.frames.length?`<div class="btn-row"><button class="secondary small" onclick="runFormCheck()">↻ Try again</button></div>`:''}` : ''}
           ${fc.status==='done' ? `<div style="margin-top:12px;">${renderBulletPoints(fc.points)}</div>` : ''}
           ${fc.status!=='done' && fc.status!=='analysing' && last ? `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);"><p class="hint">Last check — ${fmtDate(last.date)}</p>${renderBulletPoints(last.points)}</div>` : ''}
           <p class="hint" style="margin-top:12px;">AI feedback from still frames — a guide, not a replacement for a coach. If something hurts, stop.</p>
