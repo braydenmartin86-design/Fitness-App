@@ -569,7 +569,10 @@ function friendlyAIError(message){
 // Auto-retries when Gemini itself is overloaded (503/high-demand) — not for other errors like
 // missing config or a bad key, where retrying the exact same thing would just fail again.
 async function callGeminiWithRetry(prompt, opts, onRetryStatus){
-  const maxAttempts = 3;
+  // Gemini's "high demand" 503s usually clear within ~30s, so back off progressively
+  // (3s, 8s, 15s + a little jitter) rather than hammering it three times in 7 seconds.
+  const maxAttempts = 4;
+  const backoffMs = [3000, 8000, 15000];
   let lastError;
   for(let attempt=1; attempt<=maxAttempts; attempt++){
     try{
@@ -585,7 +588,7 @@ async function callGeminiWithRetry(prompt, opts, onRetryStatus){
         save();
       }
       if(!isRetryableAIError(e.message) || attempt===maxAttempts) throw e;
-      const waitMs = attempt * 2500;
+      const waitMs = backoffMs[attempt-1] + Math.round(Math.random()*1000);
       if(onRetryStatus) onRetryStatus(`⏳ Gemini is experiencing high demand — retrying in ${Math.round(waitMs/1000)}s… (attempt ${attempt+1}/${maxAttempts})`);
       await new Promise(r=>setTimeout(r, waitMs));
     }
@@ -3755,11 +3758,19 @@ ${notes ? `Respond directly and specifically to what they actually wrote. Diagno
       if(currentTab==='program' && currentPerson===personKey) renderWorkouts();
     }
   }catch(e){
-    console.error('AI session insight failed, keeping the standard note:', e);
+    // Overload is Google's side and expected now and then — warn rather than error.
+    (isRetryableAIError(e.message) ? console.warn : console.error)('AI session insight failed, keeping the standard note:', e.message);
     const insight = lastSessionInsight[personKey];
     if(insight){ insight.aiLoading = false; insight.aiError = friendlyAIError(e.message); }
     if(currentTab==='program' && currentPerson===personKey) renderWorkouts();
   }
+}
+function retrySessionInsight(){
+  const insight = lastSessionInsight[currentPerson];
+  if(!insight) return;
+  insight.aiError = null; insight.aiRetryMsg = null; insight.aiLoading = true;
+  renderWorkouts();
+  fetchAISessionInsight(currentPerson, insight.date || todayStr(), insight.sessionLabel, insight.feeling, insight.notes);
 }
 function dismissSessionInsight(){ lastSessionInsight[currentPerson] = null; renderWorkouts(); }
 function onWorkoutDateChange(value){
@@ -3958,7 +3969,7 @@ function saveFullSession(){
     // Show the reliable canned insight immediately, then upgrade it to an AI-personalised
     // one (which actually responds to what they wrote in notes) once it arrives — if the
     // call fails, the canned version just stays as-is and the error shows underneath it.
-    lastSessionInsight[currentPerson] = {sessionLabel:session.label, feeling, notes, text:generateSessionInsight(feeling), aiLoading:true};
+    lastSessionInsight[currentPerson] = {date, sessionLabel:session.label, feeling, notes, text:generateSessionInsight(feeling), aiLoading:true};
     fetchAISessionInsight(feedbackPersonKey, date, session.label, feeling, notes);
   } else {
     lastSessionInsight[currentPerson] = null;
@@ -4233,7 +4244,8 @@ function buildSessionInsightCardHTML(){
       ${insight.aiGenerated ? insight.text : `<p style="font-size:13px;line-height:1.5;margin-top:8px;">${insight.text}</p>`}
       ${insight.aiLoading ? `<p class="hint" style="margin-top:6px;">${insight.aiRetryMsg || '✨ Getting a more personal note based on what you wrote…'}</p>` : ''}
       ${insight.aiGenerated ? `<p class="hint" style="margin-top:6px;">✨ Personalised by AI based on your note.</p>` : ''}
-      ${insight.aiError ? `<p class="hint" style="margin-top:6px;color:var(--danger);">⚠ AI note failed: ${insight.aiError}</p>` : ''}
+      ${insight.aiError ? `<p class="hint" style="margin-top:6px;color:var(--danger);">⚠ AI note failed: ${insight.aiError}</p>
+      <div class="btn-row"><button class="secondary small" onclick="retrySessionInsight()">↻ Try the AI note again</button></div>` : ''}
       ${insight.notes ? `<p class="hint" style="margin-top:8px;">Your note: "${insight.notes}"</p>` : ''}
     </div>`;
 }
