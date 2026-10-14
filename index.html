@@ -251,6 +251,7 @@
   <div id="main"></div>
   <div id="bottomnav"></div>
   <div id="more-sheet-root"></div>
+  <div id="formcheck-sheet-root"></div>
 
 </div>
 
@@ -521,7 +522,7 @@ async function callGemini(prompt, opts){
       'Authorization': `Bearer ${window.SUPABASE_ANON_KEY}`,
       'apikey': window.SUPABASE_ANON_KEY,
     },
-    body: JSON.stringify(opts.images ? { prompt, json: !!opts.json, images: opts.images } : { prompt, json: !!opts.json }),
+    body: JSON.stringify({ prompt, json: !!opts.json, ...(opts.images ? {images: opts.images} : {}), ...(opts.thinkingBudget!=null ? {thinkingBudget: opts.thinkingBudget} : {}) }),
   });
   const data = await res.json().catch(()=>null);
   if(!res.ok || !data){
@@ -611,7 +612,7 @@ async function callGeminiBullets(prompt, onRetryStatus, opts){
   const count = opts.count || '3-5';
   const sentences = opts.sentences || '1-2';
   const fullPrompt = prompt + `\n\nReturn ONLY this exact JSON shape, nothing else, no markdown fences, no text before or after it: {"points": ["first point \u2014 ${sentences} sentences, clear and specific", "second point", "..."]}. Use ${count} points depending on how much there is to say \u2014 keep each point tight and to the point while still covering the genuinely important information. Don't pad with a filler point just to hit a count, and don't sacrifice the key substance for brevity \u2014 just cut the padding around it.`;
-  const raw = await callGeminiWithRetry(fullPrompt, opts.images ? {json:true, images:opts.images} : {json:true}, onRetryStatus);
+  const raw = await callGeminiWithRetry(fullPrompt, {json:true, images:opts.images, thinkingBudget:opts.thinkingBudget}, onRetryStatus);
   return parseBulletPoints(raw);
 }
 function parseBulletPoints(raw){
@@ -3937,14 +3938,19 @@ function openExerciseSwapSheet(originalName){
     </div>`;
 }
 /* ---- AI form check: video → still frames (on-device) → Gemini ---- */
-// The video never leaves the phone; ~10 evenly spaced frames are pulled out with a canvas and
+// The video never leaves the phone; ~8 evenly spaced frames are pulled out with a canvas and
 // only those small JPEGs are sent through the proxy. Only the text feedback is saved.
 let formCheck = null; // {exercise, status:'idle'|'extracting'|'analysing'|'done'|'error', frames, points, error, retryMsg}
 function openFormCheck(exercise){
   formCheck = {exercise, status:'idle', frames:[], points:null, error:null};
+  const last = (state.formChecks[currentPerson]||{})[exercise];
+  if(last && last.unread){ last.unread = false; save(); }
+  const pending = formCheckInFlight || loadPendingFormCheck();
+  if(pending && pending.exercise===exercise && pending.personKey===currentPerson) formCheck.status = 'analysing';
   renderFormCheckSheet();
+  renderFormCheckBanner();
 }
-function closeFormCheck(){ formCheck = null; const el=document.getElementById('exercise-swap-sheet-root'); if(el) el.innerHTML=''; }
+function closeFormCheck(){ formCheck = null; const el=document.getElementById('formcheck-sheet-root'); if(el) el.innerHTML=''; renderFormCheckBanner(); }
 function extractVideoFrames(file, count, width){
   return new Promise((resolve, reject)=>{
     const url = URL.createObjectURL(file);
@@ -3977,36 +3983,97 @@ async function onFormCheckVideo(input){
   if(!file || !formCheck) return;
   formCheck.status = 'extracting'; formCheck.error = null; formCheck.points = null; renderFormCheckSheet();
   try{
-    const {frames, duration} = await extractVideoFrames(file, 10, 480);
+    const {frames, duration} = await extractVideoFrames(file, 8, 384);
     formCheck.frames = frames; formCheck.duration = duration;
     await runFormCheck();
   }catch(e){
     formCheck.status = 'error'; formCheck.error = e.message; renderFormCheckSheet();
   }
 }
+// Phones suspend the page when the screen locks, which kills the in-flight request. So:
+// keep the screen awake while it runs, park the job in localStorage, and re-send it when
+// the app comes back (visibility / reload). Results land in state.formChecks either way.
+const FORM_CHECK_PENDING_KEY = 'tandem-formcheck-pending';
+let formCheckWakeLock = null;
+let formCheckInFlight = null; // the job object currently being sent, if any
+async function holdWakeLock(on){
+  try{
+    if(on && !formCheckWakeLock && navigator.wakeLock) formCheckWakeLock = await navigator.wakeLock.request('screen');
+    if(!on && formCheckWakeLock){ await formCheckWakeLock.release(); formCheckWakeLock = null; }
+  }catch(e){ formCheckWakeLock = null; }
+}
+function savePendingFormCheck(job){ try{ localStorage.setItem(FORM_CHECK_PENDING_KEY, JSON.stringify(job)); }catch(e){} }
+function loadPendingFormCheck(){ try{ return JSON.parse(localStorage.getItem(FORM_CHECK_PENDING_KEY)||'null'); }catch(e){ return null; } }
+function clearPendingFormCheck(){ try{ localStorage.removeItem(FORM_CHECK_PENDING_KEY); }catch(e){} }
+function resumePendingFormCheck(){
+  const job = loadPendingFormCheck();
+  if(!job || formCheckInFlight) return;
+  if(Date.now() - job.startedAt > 24*60*60*1000){ clearPendingFormCheck(); return; } // stale
+  sendFormCheck(job);
+}
 async function runFormCheck(){
   const fc = formCheck;
   if(!fc || !fc.frames.length) return;
-  fc.status = 'analysing'; fc.error = null; fc.retryMsg = null; renderFormCheckSheet();
-  const p = state.people[currentPerson];
+  const job = {id: uid(), personKey: currentPerson, exercise: fc.exercise, duration: fc.duration, startedAt: Date.now(),
+               frames: fc.frames.map(f=>({mimeType:f.mimeType, data:f.data}))};
+  savePendingFormCheck(job);
+  await sendFormCheck(job);
+}
+async function sendFormCheck(job){
+  formCheckInFlight = job;
+  const viewing = ()=> formCheck && formCheck.exercise===job.exercise;
+  if(viewing()){ formCheck.status = 'analysing'; formCheck.error = null; formCheck.retryMsg = null; renderFormCheckSheet(); }
+  holdWakeLock(true);
+  renderFormCheckBanner();
+  const fc = {exercise: job.exercise, duration: job.duration, frames: job.frames};
+  const p = state.people[job.personKey];
   const prompt = `You are an experienced strength coach reviewing a client's exercise form. ${p.name} filmed a set of "${fc.exercise}". You are given ${fc.frames.length} still frames taken evenly across the ~${Math.round(fc.duration||0)}-second clip, in order.
 Standard coaching cues for this exercise: ${getExerciseTip(fc.exercise)}
 First, check the frames actually show someone doing ${fc.exercise} clearly enough to judge. If not (wrong exercise, body out of frame, too dark, bad angle), say so in the first point and explain exactly how to re-film (camera at hip height, side-on or 45°, whole body in frame) — and don't guess at their form.
 Otherwise: start with an overall verdict ("Solid", "Mostly good", "Needs work" or "Stop and fix this"), then what they're doing well, then the 1–3 most important fixes, each with the specific cue to use on the next set. Only comment on what you can actually see in the frames — tempo and bar speed can't be judged from stills, so don't. If anything looks like a real injury risk (e.g. rounded lower back under load, knees collapsing in, shoulders shrugging into the ears on presses), flag it plainly.`;
   try{
-    const points = await callGeminiBullets(prompt, (msg)=>{ if(formCheck===fc){ fc.retryMsg = msg; renderFormCheckSheet(); } }, {images: fc.frames.map(f=>({mimeType:f.mimeType, data:f.data})), count:'3-6'});
-    fc.points = points; fc.status = 'done';
-    state.formChecks[currentPerson] = state.formChecks[currentPerson] || {};
-    state.formChecks[currentPerson][fc.exercise] = {date: todayStr(), points};
+    const points = await callGeminiBullets(prompt, (msg)=>{ if(viewing()){ formCheck.retryMsg = msg; renderFormCheckSheet(); } }, {images: fc.frames, count:'3-6', thinkingBudget: 0});
+    if(formCheckInFlight!==job) return; // superseded by a resend after the phone woke up
+    state.formChecks[job.personKey] = state.formChecks[job.personKey] || {};
+    state.formChecks[job.personKey][job.exercise] = {date: todayStr(), points, unread: !viewing()};
     save();
+    clearPendingFormCheck();
+    if(viewing()){ formCheck.points = points; formCheck.status = 'done'; }
   }catch(e){
-    fc.status = 'error'; fc.error = friendlyAIError(e.message);
+    if(formCheckInFlight!==job) return;
+    // Network drops from a locked screen stay pending and get re-sent on wake; real errors don't.
+    if(!/Failed to fetch|NetworkError|Load failed|network/i.test(e.message||'')) clearPendingFormCheck();
+    if(viewing()){ formCheck.status = 'error'; formCheck.error = friendlyAIError(e.message); }
   }
-  if(formCheck===fc) renderFormCheckSheet();
+  formCheckInFlight = null;
+  holdWakeLock(false);
+  if(viewing()) renderFormCheckSheet();
+  renderFormCheckBanner();
+}
+// Small floating banner so a check running/finished in the background is never "lost".
+function renderFormCheckBanner(){
+  let el = document.getElementById('formcheck-banner');
+  if(!el){ el = document.createElement('div'); el.id = 'formcheck-banner'; document.body.appendChild(el); }
+  const pending = formCheckInFlight || loadPendingFormCheck();
+  const unread = [];
+  ['p1','p2'].forEach(k=>Object.entries(state.formChecks[k]||{}).forEach(([ex,v])=>{ if(v.unread) unread.push({k, ex}); }));
+  const sheetOpen = !!formCheck;
+  let html = '';
+  if(pending && !sheetOpen) html = `🎥 Checking your ${pending.exercise} form…`;
+  else if(unread.length && !sheetOpen) html = `🎥 ${unread[0].ex} form check ready — tap to view`;
+  el.innerHTML = html ? `<div onclick="openLatestFormCheck()" style="position:fixed;left:12px;right:12px;bottom:84px;z-index:50;background:var(--surface);border:1px solid var(--p1);border-radius:14px;padding:11px 14px;font-size:13px;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.4);cursor:pointer;">${html}</div>` : '';
+}
+function openLatestFormCheck(){
+  const pending = formCheckInFlight || loadPendingFormCheck();
+  if(pending){ currentPerson = pending.personKey; openFormCheck(pending.exercise); formCheck.status='analysing'; renderFormCheckSheet(); return; }
+  for(const k of ['p1','p2']){
+    const hit = Object.entries(state.formChecks[k]||{}).find(([ex,v])=>v.unread);
+    if(hit){ currentPerson = k; openFormCheck(hit[0]); return; }
+  }
 }
 function renderFormCheckSheet(){
   const fc = formCheck;
-  const root = document.getElementById('exercise-swap-sheet-root');
+  const root = document.getElementById('formcheck-sheet-root');
   if(!fc || !root) return;
   const last = (state.formChecks[currentPerson]||{})[fc.exercise];
   const busy = fc.status==='extracting' || fc.status==='analysing';
@@ -4016,14 +4083,14 @@ function renderFormCheckSheet(){
         <div class="sheet-handle"></div>
         <div style="padding:0 16px 16px 16px;max-height:75vh;overflow-y:auto;">
           <h3 style="margin:0 0 4px 0;">🎥 Form check — ${fc.exercise}</h3>
-          <p class="hint">Film one set side-on (or at 45°), phone at hip height, whole body in frame. Under 30 seconds is plenty. The video stays on your phone — only 10 still frames are sent to the AI.</p>
+          <p class="hint">Film one set side-on (or at 45°), phone at hip height, whole body in frame. Under 30 seconds is plenty. The video stays on your phone — only 8 still frames are sent to the AI. You can close this or lock your phone — it carries on when you're back, and results are saved under Progress → Form checks.</p>
           ${!busy ? `<label class="secondary small" style="display:inline-block;margin-top:10px;padding:9px 14px;border-radius:12px;border:1px solid var(--border);cursor:pointer;">${fc.frames.length?'Choose another video':'📹 Record or choose a video'}<input type="file" accept="video/*" style="display:none;" onchange="onFormCheckVideo(this)"></label>` : ''}
           ${fc.status==='extracting' ? `<p class="hint" style="margin-top:10px;">Pulling frames out of the video…</p>` : ''}
           ${fc.status==='analysing' ? `<p class="hint" style="margin-top:10px;">${fc.retryMsg || '🤖 Coach is reviewing your form…'}</p>` : ''}
           ${fc.frames.length ? `<div style="display:flex;gap:4px;overflow-x:auto;margin-top:10px;">${fc.frames.map(f=>`<img src="${f.dataUrl}" style="height:72px;border-radius:6px;flex:none;">`).join('')}</div>` : ''}
           ${fc.status==='error' ? `<p class="hint" style="margin-top:10px;color:var(--danger);">⚠ ${fc.error}</p>${fc.frames.length?`<div class="btn-row"><button class="secondary small" onclick="runFormCheck()">↻ Try again</button></div>`:''}` : ''}
           ${fc.status==='done' ? `<div style="margin-top:12px;">${renderBulletPoints(fc.points)}</div>` : ''}
-          ${fc.status!=='done' && last ? `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);"><p class="hint">Last check — ${fmtDate(last.date)}</p>${renderBulletPoints(last.points)}</div>` : ''}
+          ${fc.status!=='done' && fc.status!=='analysing' && last ? `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);"><p class="hint">Last check — ${fmtDate(last.date)}</p>${renderBulletPoints(last.points)}</div>` : ''}
           <p class="hint" style="margin-top:12px;">AI feedback from still frames — a guide, not a replacement for a coach. If something hurts, stop.</p>
           <div class="btn-row"><button onclick="closeFormCheck()">Done</button></div>
         </div>
@@ -4546,6 +4613,15 @@ function renderProgress(){
     <p class="page-sub">Weight trend, forecast, progress per exercise, and your weekly training streak.</p>
     ${personToggleHTML(currentPerson,'setProgressPerson')}
     ${(()=>{
+      const checks = Object.entries(state.formChecks[currentPerson]||{}).sort((a,b)=>b[1].date.localeCompare(a[1].date));
+      if(!checks.length) return '';
+      return `<div class="card">
+        <h3>🎥 Form checks</h3>
+        <p class="hint">Your latest AI form review for each exercise. Tap to read it or check again.</p>
+        ${checks.map(([ex,v])=>`<div onclick="openFormCheck('${ex.replace(/'/g,"\\'")}')" style="display:flex;justify-content:space-between;gap:8px;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px;cursor:pointer;"><span>${v.unread?'🟢 ':''}<strong>${ex}</strong></span><span class="hint" style="white-space:nowrap;">${fmtDate(v.date)} ›</span></div>`).join('')}
+      </div>`;
+    })()}
+    ${(()=>{
       const all = findPRs(currentPerson).reverse();
       const month = prsThisMonth(currentPerson).length;
       return `<div class="card">
@@ -4738,6 +4814,13 @@ async function initApp(){
   lastSyncedAt = new Date();
   syncStatus = hasSharedStorage() ? 'saved' : 'local';
   render();
+  resumePendingFormCheck(); // a form check cut off by the phone sleeping / app closing
+  renderFormCheckBanner();
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState!=='visible') return;
+    // iOS often leaves a request hanging forever after sleep — resend instead of waiting on it.
+    if(loadPendingFormCheck()){ formCheckInFlight = null; resumePendingFormCheck(); }
+  });
   if(hasSharedStorage()){
     // Real-time push: the moment the other phone saves, Supabase notifies us over websocket
     // and we pull the fresh state in immediately — no waiting, no polling.
