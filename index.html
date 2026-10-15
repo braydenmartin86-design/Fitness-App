@@ -3320,6 +3320,12 @@ function renderSetup(){
     <p class="page-sub">Each person's stats drive their own calorie targets and workout program independently. Click Edit to change anything, Save to lock it back in.</p>
     <div class="grid-2">${formFor('p1')}${formFor('p2')}</div>
     <div class="card">
+      <h3>🔌 AI connection</h3>
+      <p class="hint">Checks the AI proxy (Supabase function <span class="mono">tandem-gemini-proxy</span>): whether it answers, how fast, which model, and whether it can take video frames for form checks.</p>
+      <div class="btn-row"><button class="secondary small" onclick="testAIConnection()">Test AI connection</button></div>
+      <div id="ai-test-result" class="hint" style="margin-top:8px;white-space:pre-wrap;"></div>
+    </div>
+    <div class="card">
       <h3>Data backup</h3>
       <p style="color:var(--muted);font-size:13px;">Use this before any update that needs a republish — copy your data out, then paste it back in on the new version.</p>
       <div class="btn-row">
@@ -4003,15 +4009,55 @@ function extractVideoFrames(file, count, width){
 // Supabase/AI unreachable vs. reachable-but-the-video-request-is-the-problem.
 async function diagnoseFormCheckFailure(originalMessage){
   const timedOut = /timed out/i.test(originalMessage||'');
-  let textWorks = false;
-  try{ await callGemini('Reply with the single word OK.', {timeoutMs: 20000}); textWorks = true; }catch(e){}
+  let textWorks = false, probeError = '';
+  try{ await callGemini('Reply with the single word OK.', {timeoutMs: 30000}); textWorks = true; }catch(e){ probeError = e.message||String(e); }
   if(!textWorks){
-    return 'Can\u2019t reach your AI server at all right now — other AI features won\u2019t work either. That\u2019s Supabase (or your internet), not the video. Check status.supabase.com and try again later.';
+    // Couldn't connect at all, vs. the server answered with an error — very different fixes.
+    if(/timed out|Failed to fetch|NetworkError|Load failed/i.test(probeError)){
+      return 'Can\u2019t connect to your AI server at all (no reply) — other AI features won\u2019t work either. Usually Supabase is down or the function failed to deploy/boot. Check status.supabase.com, and Supabase dashboard → Edge Functions → tandem-gemini-proxy → Logs. Setup → Test AI connection shows the details.';
+    }
+    return 'Your AI server replied with an error (so it\u2019s reachable, but something in its setup is wrong): \u201c' + probeError.replace(/^AI request failed:\s*/,'').slice(0,300) + '\u201d. Setup → Test AI connection shows the details.';
   }
   if(timedOut){
     return 'The AI is working, but reviewing the video took too long and was cut off. Redeploy the AI proxy to get the speed-up (supabase functions deploy tandem-gemini-proxy), or try a shorter clip.';
   }
   return 'The AI works for text, but the video request failed on the server. Redeploy the AI proxy (supabase functions deploy tandem-gemini-proxy). If it still fails after that, the error was: \u201c' + (originalMessage||'') + '\u201d.';
+}
+// Raw diagnostics — calls the proxy directly so the real status/error text is visible.
+async function testAIConnection(){
+  const el = document.getElementById('ai-test-result');
+  if(!el) return;
+  const line = (t)=>{ el.textContent += t + '\n'; };
+  el.textContent = '';
+  if(!hasSharedStorage()){ line('✗ Supabase isn\u2019t configured in this app, so there\u2019s no AI proxy to call.'); return; }
+  const url = `${window.SUPABASE_URL}/functions/v1/tandem-gemini-proxy`;
+  const c = document.createElement('canvas'); c.width = 32; c.height = 32;
+  const cx = c.getContext('2d'); cx.fillStyle = '#e33'; cx.fillRect(0,0,32,32);
+  const tinyJpeg = c.toDataURL('image/jpeg', 0.8).split(',')[1]; // a real (red square) JPEG
+  const call = async (label, body)=>{
+    const t0 = Date.now();
+    line(`… ${label}`);
+    try{
+      const ctrl = new AbortController(); const timer = setTimeout(()=>ctrl.abort(), 60000);
+      const res = await fetch(url, {method:'POST', signal: ctrl.signal, headers:{'Content-Type':'application/json','Authorization':`Bearer ${window.SUPABASE_ANON_KEY}`,'apikey':window.SUPABASE_ANON_KEY}, body: JSON.stringify(body)});
+      clearTimeout(timer);
+      const text = await res.text();
+      let data = null; try{ data = JSON.parse(text); }catch(e){}
+      const secs = ((Date.now()-t0)/1000).toFixed(1);
+      if(res.ok && data && data.text!=null){
+        const framesMissing = body.images && data.imagesReceived===undefined;
+        line(`${framesMissing?'✗':'✓'} ${label}: HTTP ${res.status} in ${secs}s${data.model?` · model ${data.model}`:' · (old proxy — no model reported)'}${body.images?` · frames received: ${data.imagesReceived===undefined?'NOT SUPPORTED (old proxy — redeploy)':data.imagesReceived}`:''}`);
+        return !framesMissing;
+      }
+      line(`✗ ${label}: HTTP ${res.status} in ${secs}s — ${(data&&data.error)||text.slice(0,300)||'(empty response)'}`);
+      return false;
+    }catch(e){
+      line(`✗ ${label}: no reply after ${((Date.now()-t0)/1000).toFixed(1)}s — ${e.name==='AbortError'?'timed out':e.message}. The function didn\u2019t answer at all (Supabase down, or the function crashed/failed to deploy — check its Logs in the Supabase dashboard).`);
+      return false;
+    }
+  };
+  const ok = await call('Text request', {prompt:'Reply with the single word OK.', json:false});
+  if(ok) await call('Image request (form check)', {prompt:'Describe this image in 3 words.', json:false, images:[{mimeType:'image/jpeg', data:tinyJpeg}]});
 }
 function retryStalledFormCheck(){ if(formCheck) formCheck.stalled = false; const job = loadPendingFormCheck(); if(job) sendFormCheck(job); }
 function cancelStalledFormCheck(){ clearPendingFormCheck(); if(formCheck){ formCheck.stalled=false; formCheck.status='idle'; formCheck.error=null; renderFormCheckSheet(); } renderFormCheckBanner(); }
