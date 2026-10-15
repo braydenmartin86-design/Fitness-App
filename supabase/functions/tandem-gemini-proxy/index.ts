@@ -6,7 +6,7 @@
 // Response: { text, imagesReceived }  or  { error }
 //
 // Deploy:   supabase functions deploy tandem-gemini-proxy
-// Secrets:  supabase secrets set GEMINI_API_KEY=...
+// Secrets:  supabase secrets set GEMINI_API_KEY=...   (any casing works, e.g. gemini_api_key)
 // Optional: supabase secrets set GEMINI_MODELS="model-a,model-b"
 //           Models are tried in order; the next one is used only when the previous is
 //           overloaded (503 / high demand), so a busy model doesn't fail the request.
@@ -28,6 +28,21 @@ const reply = (body: unknown, status = 200) =>
 // can only report as "Load failed". Give Gemini 120s, then answer with a readable error instead.
 const GEMINI_TIMEOUT_MS = 120_000;
 
+// Secret names are case-sensitive, so accept GEMINI_API_KEY, gemini_api_key, or any other
+// secret whose name looks like a Gemini key.
+function findGeminiKey(): string | undefined {
+  for (const name of ["GEMINI_API_KEY", "gemini_api_key", "Gemini_API_Key"]) {
+    const v = Deno.env.get(name);
+    if (v) return v;
+  }
+  try {
+    const hit = Object.entries(Deno.env.toObject()).find(([k, v]) => /gemini/i.test(k) && /key/i.test(k) && v);
+    return hit?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
 Deno.serve(async (req) => {
   try {
     return await handle(req);
@@ -42,8 +57,8 @@ async function handle(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return reply({ error: "Use POST" }, 405);
 
-  const key = Deno.env.get("GEMINI_API_KEY");
-  if (!key) return reply({ error: "GEMINI_API_KEY secret is not set on this function" }, 500);
+  const key = findGeminiKey();
+  if (!key) return reply({ error: "No Gemini key found — add a secret named GEMINI_API_KEY (or gemini_api_key) in Supabase → Edge Functions → Secrets" }, 500);
 
   let body: { prompt?: string; json?: boolean; thinkingBudget?: number; images?: { mimeType?: string; data?: string }[] };
   try { body = await req.json(); } catch { return reply({ error: "Invalid JSON body" }, 400); }
