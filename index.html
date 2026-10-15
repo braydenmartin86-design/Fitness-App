@@ -844,7 +844,8 @@ function estimateWorkingWeight(personKey, exerciseName, repsScheme){
     const w = (+oneRM) / (1 + repsAvg/30);
     return {weight: roundToPlate(w), source:'1RM'};
   }
-  const history = (state.workouts[personKey]||[]).filter(w=>w.exercise===exerciseName).sort((a,b)=>a.date.localeCompare(b.date));
+  // Only kg × reps entries — timed ones (walking pad, rope) have no sets to work from.
+  const history = (state.workouts[personKey]||[]).filter(w=>w.exercise===exerciseName && w.sets && w.sets.length).sort((a,b)=>a.date.localeCompare(b.date));
   if(!history.length) return null;
   const last = history[history.length-1];
   const maxWeight = Math.max(...last.sets.map(s=>s.weight));
@@ -3844,7 +3845,7 @@ function getSessionOptionsForPerson(personKey, forDate){
 }
 function getDisplayExerciseName(originalName){ return sessionExerciseSwaps[originalName] || originalName; }
 function getProgressionFlags(personKey, displayName, prescribedReps, prescribedSets){
-  const history = state.workouts[personKey].filter(w=>w.exercise===displayName && !w.cardio).sort((a,b)=>a.date.localeCompare(b.date));
+  const history = state.workouts[personKey].filter(w=>w.exercise===displayName && !w.cardio && w.sets && w.sets.length).sort((a,b)=>a.date.localeCompare(b.date));
   if(!history.length) return null; // nothing to compare against yet
   const lastSession = history[history.length-1];
   const lastBest = lastSession.sets.reduce((a,b)=> e1RM(b.weight,b.reps) > e1RM(a.weight,a.reps) ? b : a);
@@ -4296,8 +4297,10 @@ function renderNextTargetsHTML(personKey){
   const rowFor = (originalName, repsScheme) => {
     const loggedName = findLoggedNameForSlot(personKey, originalName);
     if(!loggedName) return ''; // never logged (original or a substitute) — skip entirely, no placeholder
+    if(isCardioLog(loggedName)) return ''; // timed work (walking pad, rope) has no weight target
     const suggestion = estimateWorkingWeight(personKey, loggedName, repsScheme);
-    const history = state.workouts[personKey].filter(w=>w.exercise===loggedName).sort((a,b)=>a.date.localeCompare(b.date));
+    const history = state.workouts[personKey].filter(w=>w.exercise===loggedName && w.sets && w.sets.length).sort((a,b)=>a.date.localeCompare(b.date));
+    if(!history.length) return '';
     const lastLogged = history[history.length-1];
     const bestE1RM = Math.max(...history.flatMap(w=>w.sets.map(s=>e1RM(s.weight,s.reps))));
     const lastE1RM = Math.max(...lastLogged.sets.map(s=>e1RM(s.weight,s.reps)));
@@ -4537,7 +4540,7 @@ function buildNextSessionCardHTML(){
 }
 // Kept as a thin compatibility alias — a lot of functions still call renderWorkouts() to
 // trigger a re-render after a state change; all of that content now lives inside Program.
-function renderWorkouts(){ renderProgram(); }
+function renderWorkouts(){ try{ renderProgram(); }catch(e){ showRenderError('program', e); } }
 function addOneRepMax(){
   const exercise = document.getElementById('orm-exercise').value.trim();
   const weight = parseFloat(document.getElementById('orm-weight').value);
@@ -4856,7 +4859,21 @@ function setProgressCardio(name){ progressCardio[currentPerson] = name; renderPr
 /* =========================================================
    ROUTER
    ========================================================= */
+// If a page ever hits a bug, show what happened (and keep the rest of the app usable)
+// instead of leaving a blank or half-drawn screen.
+function showRenderError(where, e){
+  console.error(`${where} failed to render:`, e);
+  const main = document.getElementById('main');
+  if(main) main.innerHTML = `<div class="card" style="margin-top:20px;border-color:var(--danger);">
+    <h3>⚠ This page hit a problem</h3>
+    <p class="hint">Your data is safe — this is a display bug. Other tabs still work. Send this to Claude to get it fixed:</p>
+    <p class="mono" style="font-size:12px;white-space:pre-wrap;margin-top:8px;">${where}: ${(e&&e.message)||e}\n${((e&&e.stack)||'').split('\n').slice(1,4).join('\n')}</p>
+  </div>`;
+}
 function render(){
+  try{ renderTab(); }catch(e){ showRenderError(currentTab, e); }
+}
+function renderTab(){
   // "workouts" was a standalone tab in older saved state — its content now lives inside
   // Program (logging) and Progress (1RMs/trends), so redirect rather than show a blank page.
   if(currentTab==='workouts') currentTab = 'program';
