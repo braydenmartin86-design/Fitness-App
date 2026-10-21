@@ -1117,6 +1117,17 @@ function quickWorkoutPlan(){
     {name:'Jump Rope Finisher', sets:1, reps:'3 rounds: 40s on / 20s off', restSec:0, minutes:3},
   ];
 }
+// Anything a calendar day can hold: a split session, the Home Workout, or the 10-min workout.
+const FLEX_SESSION_IDS = ['home','quick']; // can sit on several days a week; count like a home session
+function scheduleSessionMeta(personKey, id){
+  if(id==='home') return {id, label:'🏠 Home Workout', exercises: homeWorkoutPlan(state.people[personKey]), color:'var(--p2)', flex:true};
+  if(id==='quick') return {id, label:QUICK_SESSION_LABEL, exercises: quickWorkoutPlan(), color:'var(--warn)', flex:true};
+  const s = getWeeklySplit(personKey).find(x=>x.id===id);
+  return s ? {id, label:s.label, exercises:s.exercises, color:getSessionColor(s.type), flex:false} : null;
+}
+function scheduleSessionOptions(personKey){
+  return [...getWeeklySplit(personKey).map(s=>({id:s.id, label:s.label})), {id:'home', label:'🏠 Home Workout'}, {id:'quick', label:QUICK_SESSION_LABEL}];
+}
 // Broader library of cardio/activity types loggable individually — separate from the
 // treadmill/bike prescriptions baked into the auto-generated program.
 const CARDIO_LOG_NAMES = [
@@ -1672,8 +1683,8 @@ function startWorkoutCardHTML(key){
     return `<div class="card"><h3><span class="dot" style="background:var(--${accent})"></span>${p.name} — ✅ today's workout done</h3>
       <p class="hint">Nice work. Rest up and eat your protein.</p>${prLine}</div>`;
   }
-  const isHome = info.session==='home';
-  const session = isHome ? {label:'🏠 Home Workout'} : getWeeklySplit(key).find(s=>s.id===info.session);
+  const isHome = FLEX_SESSION_IDS.includes(info.session); // already the no-drive option
+  const session = scheduleSessionMeta(key, info.session);
   if(!session) return '';
   const now = new Date();
   const nowMin = now.getHours()*60 + now.getMinutes();
@@ -1697,9 +1708,9 @@ function startWorkoutCardHTML(key){
   return `<div class="card" style="border-color:var(--${accent});">${header}
     ${afternoon && !isHome ? `<p class="hint">Can't be bothered with the drive? Skip the gym trip, not the workout — do it at home and it still counts for the week.</p>` : `<p class="hint">Everything's loaded with today's weights. Just press start.</p>`}
     <div class="btn-row" style="flex-wrap:wrap;">
-      <button onclick="startTodaysWorkout('${key}','${info.session}')">▶ Start ${isHome?'workout':session.label}</button>
+      <button onclick="startTodaysWorkout('${key}','${info.session}')">▶ Start ${session.label}</button>
       ${afternoon && !isHome ? `<button class="secondary small" onclick="startTodaysWorkout('${key}','home')">🏠 Home instead</button>` : ''}
-      ${quickBtn('⚡ Just 10 min')}
+      ${info.session==='quick' ? '' : quickBtn('⚡ Just 10 min')}
     </div>${prLine}</div>`;
 }
 function startTodaysWorkout(key, sessionId){
@@ -1736,14 +1747,8 @@ function renderTodayPanel(key){
   if(isTrainingDay){
     let exercises = [];
     let sessionLabel = '';
-    if(info.session==='home'){
-      exercises = homeWorkoutPlan(p);
-      sessionLabel = '🏠 Home Workout';
-    } else {
-      const split = getWeeklySplit(key);
-      const session = split.find(s=>s.id===info.session);
-      if(session){ exercises = session.exercises; sessionLabel = session.label; }
-    }
+    const meta = scheduleSessionMeta(key, info.session);
+    if(meta){ exercises = meta.exercises; sessionLabel = meta.label; }
     workoutHTML = `
       <p class="hint" style="margin-bottom:8px;">${sessionLabel}${info.trainTime?` · ~${info.trainTime}`:''}</p>
       ${planTable(exercises, key)}`;
@@ -1971,8 +1976,8 @@ function renderWeekBlockHTML(weekStart, weekBadgeLabel){
   const p = state.people[currentPerson];
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
   const split = getWeeklySplit(currentPerson);
-  const scheduled = Object.values(assignments).filter(v=>v.session && v.session!=='home').length;
-  const homeUsed = Object.values(assignments).some(v=>v.session==='home');
+  const scheduled = Object.values(assignments).filter(v=>v.session && !FLEX_SESSION_IDS.includes(v.session)).length;
+  const homeUsed = Object.values(assignments).some(v=>FLEX_SESSION_IDS.includes(v.session));
 
   const todayStrVal = todayStr();
   const weekEndStr = addDaysStr(weekStart, 6);
@@ -2002,20 +2007,13 @@ function renderWeekBlockHTML(weekStart, weekBadgeLabel){
     const activityLabel = activityDef ? (activityDef.id==='other' ? (info.activityOther||'Other activity') : activityDef.label) : null;
 
     let exercises = null, color = null, title = null, sub = null;
-    if(assigned && assigned!=='home'){
-      const session = split.find(s=>s.id===assigned);
-      if(session){
-        exercises = session.exercises;
-        color = getSessionColor(session.type);
-        title = session.label;
-        const strengthCount = exercises.filter(e=>e.group!=='cardio').length;
-        sub = `${strengthCount} exercises${info.trainTime?` · ~${info.trainTime}`:''}`;
-      }
-    } else if(assigned==='home'){
-      exercises = homeWorkoutPlan(p);
-      color = 'var(--p2)';
-      title = '🏠 Home Workout';
-      sub = `${exercises.length} moves${info.trainTime?` · ~${info.trainTime}`:''}`;
+    const meta = assigned ? scheduleSessionMeta(currentPerson, assigned) : null;
+    if(meta){
+      exercises = meta.exercises;
+      color = meta.color;
+      title = meta.label;
+      const count = meta.flex ? exercises.length : exercises.filter(e=>e.group!=='cardio').length;
+      sub = `${count} ${meta.flex?'moves':'exercises'}${assigned==='quick'?' · ~10 min':''}${info.trainTime?` · ~${info.trainTime}`:''}`;
     }
     let bodyHTML;
     if(exercises){
@@ -2052,7 +2050,7 @@ function renderWeekBlockHTML(weekStart, weekBadgeLabel){
     <div class="cal-week-head">
       <div>
         <div class="cal-week-range">${rangeLabel}<span class="cal-week-badge">${weekBadgeLabel}</span></div>
-        <p class="hint" style="margin-top:4px;">${scheduled} / ${split.length} sessions scheduled ${homeUsed?'· incl. home workout':'· home workouts count too'}</p>
+        <p class="hint" style="margin-top:4px;">${scheduled} / ${split.length} sessions scheduled ${homeUsed?'· plus home / 10-min':'· home & 10-min workouts count too'}</p>
         <div class="cal-week-dots">${dotsHTML}</div>
         <p class="hint" style="margin-top:8px;">🥡 Work days (tap to toggle):</p>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">${DAY_LABELS.map(day=>{
@@ -2231,7 +2229,7 @@ function openSessionPickerForDay(weekStart, day){
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
   const root = document.getElementById('day-settings-sheet-root');
   if(!root) return;
-  const options = [...split.map(s=>({id:s.id, label:s.label})), {id:'home', label:'🏠 Home Workout'}];
+  const options = scheduleSessionOptions(currentPerson);
   root.innerHTML = `
     <div class="more-sheet-overlay" onclick="if(event.target===this) closeDaySettingsSheet()">
       <div class="more-sheet">
@@ -2239,7 +2237,7 @@ function openSessionPickerForDay(weekStart, day){
         <div style="padding:0 16px 16px 16px;max-height:60vh;overflow-y:auto;">
           <h3 style="margin:0 0 10px 0;">Add a session — ${day}</h3>
           ${options.map(o=>{
-            const usedDay = DAY_LABELS.find(d=>assignments[d].session===o.id);
+            const usedDay = FLEX_SESSION_IDS.includes(o.id) ? null : DAY_LABELS.find(d=>assignments[d].session===o.id);
             return `<div class="sheet-item" onclick="assignSpecificSession('${weekStart}','${day}','${o.id}')">${o.label}${usedDay?` <span class="hint">(currently ${usedDay} \u2014 will move here)</span>`:''}</div>`;
           }).join('')}
         </div>
@@ -2248,8 +2246,8 @@ function openSessionPickerForDay(weekStart, day){
 }
 function assignSpecificSession(weekStart, day, sessionId){
   const assignments = ensureWeekSchedule(currentPerson, weekStart);
-  // If this session is already assigned to a different day this week, move it rather than duplicate it
-  DAY_LABELS.forEach(d=>{ if(d!==day && assignments[d].session===sessionId) assignments[d].session = null; });
+  // A gym session already on another day moves here rather than duplicating; Home / 10-min can repeat.
+  if(!FLEX_SESSION_IDS.includes(sessionId)) DAY_LABELS.forEach(d=>{ if(d!==day && assignments[d].session===sessionId) assignments[d].session = null; });
   assignments[day].session = sessionId;
   assignments[day].completed = false;
   save();
@@ -2377,6 +2375,8 @@ function openDaySettingsSheet(weekStart, day){
           ${trainingSuggestion ? `<p class="hint" style="margin-top:8px;">${trainingSuggestion}</p>` : ''}
           ` : ''}
           ${info.session ? `
+          <label style="margin-top:14px;">Swap this day to</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">${scheduleSessionOptions(currentPerson).filter(o=>o.id!==info.session).map(o=>`<button class="secondary small" onclick="assignSpecificSession('${weekStart}','${day}','${o.id}')">${o.label}</button>`).join('')}</div>
           <label style="margin-top:14px;">Train at (optional — drives pre/post-workout meal timing)</label>
           <input type="time" value="${info.trainTime}" onchange="setWorkInfo('${weekStart}','${day}','trainTime',this.value)">
           <div class="btn-row"><button class="secondary small" onclick="clearDaySession('${weekStart}','${day}');closeDaySettingsSheet();">✕ Remove this session</button></div>
@@ -4284,6 +4284,7 @@ function getSessionsWithExercises(personKey){
   const home = homeWorkoutPlan(person);
   const sessions = split.map(s=>({id:s.id, label:s.label, exercises:s.exercises.filter(e=>e.group!=='cardio')}));
   sessions.push({id:'home', label:'🏠 Home Workout', exercises: home});
+  sessions.push({id:'quick', label:QUICK_SESSION_LABEL, exercises: quickWorkoutPlan()});
   return sessions;
 }
 function findLoggedNameForSlot(personKey, exerciseName){
@@ -4490,7 +4491,7 @@ function markScheduledDayDone(personKey, date, sessionId){
   const info = ensureWeekSchedule(personKey, weekStart)[label];
   if(!info || !info.session || info.completed) return;
   if(sessionId===info.session) info.completed = true;
-  else if(sessionId==='home' || sessionId==='quick'){ info.session = 'home'; info.completed = true; }
+  else if(FLEX_SESSION_IDS.includes(sessionId)){ info.session = sessionId; info.completed = true; }
 }
 // Walks each exercise's history in date order; a PR is a heavier top set than ever before,
 // or more reps at your heaviest weight. First-ever logs don't count (nothing to beat yet).
@@ -4661,8 +4662,8 @@ function countCompletedByType(personKey, weekStart){
   DAY_LABELS.forEach(d=>{
     const info = schedule[d];
     if(!info.completed) return;
-    if(info.session && info.session!=='home') gym++;
-    else if(info.session==='home') home++;
+    if(FLEX_SESSION_IDS.includes(info.session)) home++;
+    else if(info.session) gym++;
     if(info.activity) recreational++; // can stack with a session on the same day
   });
   return {gym, home, recreational};
