@@ -517,7 +517,9 @@ async function callGemini(prompt, opts){
   const url = `${window.SUPABASE_URL}/functions/v1/tandem-gemini-proxy`;
   // A request can hang forever after a phone sleeps or during an outage — cap it.
   const controller = new AbortController();
-  const timeoutMs = opts.timeoutMs || (opts.images ? 110000 : 45000);
+  // Long coaching notes on "thinking" models can take a minute+. The proxy gives Gemini 120s and
+  // Supabase stops the function at ~150s, so wait slightly longer than the proxy does.
+  const timeoutMs = opts.timeoutMs || 125000;
   const timer = setTimeout(()=>controller.abort(), timeoutMs);
   let res;
   try{
@@ -579,7 +581,10 @@ function friendlyAIError(message){
   if(/quota|billing/i.test(msg)){
     return `Your Gemini quota is used up for today \u2014 resets ${formatResetTime()} your time (that's midnight Pacific, always). Nothing to do but wait, retrying won\u2019t help before then.`;
   }
-  if(/timed out|Failed to fetch|NetworkError|Load failed/i.test(msg)){
+  if(/timed out|took too long/i.test(msg)){
+    return 'The AI took too long to reply this time (Gemini is slow right now). Tap try again in a minute.';
+  }
+  if(/Failed to fetch|NetworkError|Load failed/i.test(msg)){
     return 'Couldn\u2019t reach the AI (connection dropped, or Supabase/Gemini is having issues). Check status.supabase.com, then try again.';
   }
   if(/HTTP 5\d\d|HTTP 404/i.test(msg)){
@@ -3554,7 +3559,8 @@ function renderLog(){
         ` : summary.aiLoading ? `
           <p class="hint">${summary.aiRetryMsg || '✨ Writing your coaching note…'}</p>
         ` : `
-          ${summary.aiError ? `<p class="hint" style="color:var(--danger);margin-bottom:10px;">⚠ AI note failed: ${summary.aiError} — showing the standard breakdown instead.</p>` : ''}
+          ${summary.aiError ? `<p class="hint" style="color:var(--danger);margin-bottom:6px;">⚠ AI note failed: ${summary.aiError} The breakdown below is the app's standard (non-AI) one.</p>
+          <div class="btn-row" style="margin:0 0 10px 0;"><button class="secondary small" onclick="retryDailyInsight()">↻ Try the AI note again</button></div>` : ''}
           ${summary.weightNote ? `<p class="hint">${summary.weightNote}</p>` : ''}
           ${summary.workoutNote ? `<p class="hint" style="margin-top:6px;">${summary.workoutNote}</p>` : ''}
           <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
@@ -3650,16 +3656,25 @@ Give in-depth coaching that covers: an honest, specific read on how today actual
       }
     }, {count:'4-7', sentences:'1-3'});
     if(lastDailySummary[personKey] && lastDailySummary[personKey].date===date){
+      // (if this reply belongs to an earlier save of the same day, it's still a valid note for it)
       lastDailySummary[personKey].aiText = renderBulletPoints(points);
       lastDailySummary[personKey].aiLoading = false;
       lastDailySummary[personKey].aiError = null;
       if(currentTab==='log' && currentPerson===personKey) renderLog();
     }
   }catch(e){
-    console.error('AI daily insight failed, falling back to the standard tips:', e);
-    if(lastDailySummary[personKey]){ lastDailySummary[personKey].aiLoading = false; lastDailySummary[personKey].aiError = friendlyAIError(e.message); }
+    console.warn('AI daily insight failed, falling back to the standard tips:', e.message);
+    const sm = lastDailySummary[personKey];
+    if(sm && sm===summary && !sm.aiText){ sm.aiLoading = false; sm.aiError = friendlyAIError(e.message); }
     if(currentTab==='log' && currentPerson===personKey) renderLog();
   }
+}
+function retryDailyInsight(){
+  const summary = lastDailySummary[currentPerson];
+  if(!summary) return;
+  summary.aiError = null; summary.aiRetryMsg = null; summary.aiLoading = true;
+  renderLog();
+  fetchAIDailyInsight(currentPerson, summary.date);
 }
 function deleteLog(id){ state.logs[currentPerson] = state.logs[currentPerson].filter(l=>l.id!==id); save(); renderLog(); }
 
