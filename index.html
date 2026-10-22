@@ -3490,11 +3490,13 @@ function generateDailySummary(personKey, date){
 
   let weightNote = null;
   const logs = sortedLogs(personKey).filter(l=>l.weight);
+  const lastW = logs[logs.length-1];
+  const lastWeighInText = (lastW && !(p.hideWeight && !revealedWeights[personKey])) ? `Latest weigh-in: ${lastW.weight} kg (${fmtDate(lastW.date)}). ` : '';
   if(logs.length>=2){
     const trend = weeklyTrend(personKey);
     if(trend){
       const dir = trend.perWeek>0.05 ? 'gaining' : trend.perWeek<-0.05 ? 'losing' : 'holding steady at';
-      weightNote = `Your weekly trend is ${trend.perWeek>0?'+':''}${fmt1(trend.perWeek)} kg/week — you're ${dir} weight right now. This uses your recent weigh-ins rather than just today's number, since weight naturally bounces around day to day from water, food volume and sodium — the trend line is what actually reflects fat loss or muscle gain.`;
+      weightNote = `${lastWeighInText}Your weekly trend is ${trend.perWeek>0?'+':''}${fmt1(trend.perWeek)} kg/week — you're ${dir} weight right now. This uses your recent weigh-ins rather than just today's number, since weight naturally bounces around day to day from water, food volume and sodium — the trend line is what actually reflects fat loss or muscle gain.`;
     }
   } else {
     weightNote = `Log a weigh-in a few more days this week and a trend line will show up here — that's far more useful than any single day's number, since weight naturally fluctuates.`;
@@ -3576,14 +3578,15 @@ function renderLog(){
     </div>` : '';
   document.getElementById('main').innerHTML = `
     <h1 class="page-title">Daily Log</h1>
-    <p class="page-sub">Enter your actual numbers from MyFitnessPal here at day's end. Saving gives you a full review below — how it compares to target, your weight trend, and why it matters.</p>
+    <p class="page-sub">Weigh in each morning, then log yesterday's food and training from MyFitnessPal. Saving the daily log gives you a full review below — how it compares to target, your weight trend, and why it matters.</p>
     ${personToggleHTML(currentPerson,'setLogPerson')}
     ${summaryHTML}
+    ${weighInCardHTML(currentPerson)}
     <div class="card">
-      <h3>Add entry</h3>
+      <h3>🍽 Daily log</h3>
+      <p class="hint">Defaults to yesterday — a full day's numbers are only complete the morning after.</p>
       <div class="row">
-        <div><label>Date</label><input type="date" id="log-date" value="${todayStr()}"></div>
-        <div><label>Weight (kg)</label><input type="number" step="0.1" id="log-weight" placeholder="e.g. 78.4"></div>
+        <div><label>Date</label><input type="date" id="log-date" value="${addDaysStr(todayStr(), -1)}"></div>
       </div>
       <div class="row">
         <div><label>Calories (kcal)</label><input type="number" id="log-cals" placeholder="${t?t.calories:''}"></div>
@@ -3594,7 +3597,7 @@ function renderLog(){
         <div><label>Carbs (g)</label><input type="number" id="log-carbs" placeholder="${t?t.carbs:''}"></div>
         <div><label>Fat (g)</label><input type="number" id="log-fat" placeholder="${t?t.fat:''}"></div>
       </div>
-      <div class="btn-row"><button onclick="addLog()">Save entry</button></div>
+      <div class="btn-row"><button onclick="addLog()">Save daily log</button></div>
     </div>
     <div class="card">
       <h3>History</h3>
@@ -3614,20 +3617,58 @@ function renderLog(){
   `;
 }
 function setLogPerson(key){ currentPerson=key; renderLog(); }
+// Weigh-ins are their own thing (usually this morning), separate from yesterday's food log.
+// Both land on the same per-date log entry, and each only updates its own fields.
+function latestWeighIn(personKey){
+  const withWeight = sortedLogs(personKey).filter(l=>l.weight!=null);
+  return withWeight.length ? withWeight[withWeight.length-1] : null;
+}
+let weighInSavedMsg = {p1:null, p2:null};
+function weighInCardHTML(personKey){
+  const p = state.people[personKey];
+  const last = latestWeighIn(personKey);
+  const hidden = p.hideWeight && !revealedWeights[personKey];
+  const today = todayStr();
+  const doneToday = last && last.date===today;
+  return `
+    <div class="card">
+      <h3>⚖️ Weigh-in</h3>
+      ${last ? `<p class="hint">Last weigh-in: <strong style="color:var(--text);">${hidden?'🔒':last.weight+' kg'}</strong> on ${fmtDate(last.date)}${doneToday?' ✅':''}</p>` : `<p class="hint">First thing in the morning, after the bathroom, before eating — same conditions every time.</p>`}
+      <div class="row">
+        <div><label>Date</label><input type="date" id="weighin-date" value="${today}"></div>
+        <div><label>Weight (kg)</label><input type="number" step="0.1" id="weighin-weight" placeholder="${last&&!hidden?last.weight:'e.g. 78.4'}"></div>
+      </div>
+      <div class="btn-row"><button class="secondary" onclick="saveWeighIn()">Save weigh-in</button></div>
+      ${weighInSavedMsg[personKey] ? `<p class="hint" style="margin-top:6px;color:var(--success);">${weighInSavedMsg[personKey]}</p>` : ''}
+    </div>`;
+}
+function upsertLogFields(personKey, date, fields){
+  const logs = state.logs[personKey];
+  const idx = logs.findIndex(l=>l.date===date);
+  if(idx>=0) logs[idx] = {...logs[idx], ...fields};
+  else logs.push({id:uid(), date, weight:null, calories:null, protein:null, carbs:null, fat:null, workoutDone:false, ...fields});
+}
+function saveWeighIn(){
+  const date = document.getElementById('weighin-date').value || todayStr();
+  const weight = parseFloat(document.getElementById('weighin-weight').value);
+  if(isNaN(weight) || weight<=0){ alert('Enter your weight first.'); return; }
+  upsertLogFields(currentPerson, date, {weight});
+  save();
+  weighInSavedMsg[currentPerson] = `Saved ${weight} kg for ${fmtDate(date)}. It'll be included in your next daily log review.`;
+  renderLog();
+}
 function addLog(){
-  const date = document.getElementById('log-date').value || todayStr();
-  const weight = parseFloat(document.getElementById('log-weight').value);
+  const date = document.getElementById('log-date').value || addDaysStr(todayStr(), -1);
   const calories = parseFloat(document.getElementById('log-cals').value);
   const protein = parseFloat(document.getElementById('log-protein').value);
   const carbs = parseFloat(document.getElementById('log-carbs').value);
   const fat = parseFloat(document.getElementById('log-fat').value);
   const workoutDone = document.getElementById('log-workout').value === 'yes';
-  const entry = {id:uid(), date,
-    weight: isNaN(weight)?null:weight, calories: isNaN(calories)?null:calories,
-    protein: isNaN(protein)?null:protein, carbs: isNaN(carbs)?null:carbs, fat: isNaN(fat)?null:fat, workoutDone};
-  const existingIdx = state.logs[currentPerson].findIndex(l=>l.date===date);
-  if(existingIdx>=0) state.logs[currentPerson][existingIdx] = {...state.logs[currentPerson][existingIdx], ...entry, id: state.logs[currentPerson][existingIdx].id};
-  else state.logs[currentPerson].push(entry);
+  // Only food/training fields — never touches a weight saved separately for that date.
+  upsertLogFields(currentPerson, date, {
+    calories: isNaN(calories)?null:calories,
+    protein: isNaN(protein)?null:protein, carbs: isNaN(carbs)?null:carbs, fat: isNaN(fat)?null:fat, workoutDone});
+  weighInSavedMsg[currentPerson] = null;
   save();
   const feedbackPersonKey = currentPerson;
   lastDailySummary[currentPerson] = generateDailySummary(currentPerson, date);
@@ -3644,6 +3685,7 @@ async function fetchAIDailyInsight(personKey, date){
   const prompt = `You are a supportive, evidence-informed nutrition and training coach texting a client at the end of their day. ${p.name} is on a "${PHASES[p.phase].label.split(' \u2014 ')[0]}" phase, target ${summary.dayTarget} kcal today.
 
 Today's actuals: ${e.calories!=null?`${e.calories} kcal (${summary.calPct}% of target)`:'calories not logged'}, ${e.protein!=null?`${e.protein}g protein${t.protein?` of a ${t.protein}g target`:''}`:'protein not logged'}, ${e.carbs!=null?`${e.carbs}g carbs${t.carbs?` of a ${t.carbs}g target`:''}`:'carbs not logged'}, ${e.fat!=null?`${e.fat}g fat`:'fat not logged'}. Workout done today: ${e.workoutDone?'yes':'no'}.
+${(()=>{ const w = latestWeighIn(personKey); return w ? `Latest weigh-in: ${w.weight} kg on ${w.date}${w.date!==date?` (the log itself is for ${date})`:''}.` : 'No weigh-ins logged yet.'; })()}
 ${summary.weightNote ? `Weight trend context: ${summary.weightNote}` : ''}
 Tomorrow: ${summary.tomorrowNotes.join(' ')}
 
